@@ -56,6 +56,34 @@ NodeIndex correspondence matches how the arrays are later indexed.
 
 These three carry **no policy decisions and no API changes** — safe to merge as-is.
 
+## 1.1 Delivered now — `pv/exact-arithmetic` (unit 4, pushed to the fork)
+
+Stacked on `pv/correctness-fixes` (4 commits). Verified: `cargo test -p petrivet
+--lib` → **132 passed, 2 failed** (only the inherited his-WIP tests of §5);
+clippy **identical to baseline** (31 warnings). The headline correctness feature.
+
+| Commit | One-line value |
+|---|---|
+| `2c58073` Add exact-rational core (`rational.rs`, `exact_matrix.rs`) | An exact ℚ linear-algebra layer (Rational over i128, RREF, kernels, incidence over ℚ, the marking equation over ℚ). No new crate dependency. |
+| `1b701e5` Exact negative reachability guard | The `Unreachable` verdict rests on `marking_equation_exact` over ℚ, not on the f64 LP/ILP merely failing; the live-marked-graph positive is *realized* (replayed) into a checkable firing word rather than returned as a rounded ILP vector. |
+| `3cc7909` Exact negative coverability guard | The `Uncoverable` verdict rests on `covering_invariant_exact` over ℚ (a non-negative place sub-invariant), not on the f64 covering LP/ILP failing. |
+| `eb7e4da` Mark superseded f64 solvers as retained suggesters | Keeps the orphaned f64 solvers (no longer on a verdict path) with a localized `allow` + note; restores clippy parity. |
+
+**Dependency refinement (vs the original §2 note):** unit 4's *core value* — the
+exact **negative** guard — is independent of everything. But the sound,
+capability-preserving **positive** path for live marked graphs realizes the
+suggested firing vector by *replaying* it (`realize_firing_vector`), which needs a
+working `fire` — i.e. **unit 1**. On the un-fixed baseline, `fire` is inert, so
+realization would silently always fail (a hidden capability regression that
+vanishes once unit 1 lands). So unit 4 is **stacked on `pv/correctness-fixes`**,
+not built off raw `origin/main`. This is natural ordering — the correctness fixes
+merge first regardless.
+
+Honest performance note carried into the PR: the exact core is RREF over ℚ, not
+the fraction-free Bareiss schedule, so on large instances it may be slower than
+the f64 path it guards. The f64 path is preserved as a suggester; this is a
+measured follow-on, not a regression on the suggestion.
+
 ---
 
 ## 2. The decomposition (full unit sequence)
@@ -68,7 +96,7 @@ Ordered by standalone value × reviewability. Status: ✅ delivered, ◻ specced
 | 1 | Fix inert `fire_unchecked` | Simulation works again. | ✅ §1 |
 | 2 | Fix petgraph mirror order | Graph-derived analyses stop being wrong/flaky. | ✅ §1 |
 | 3 | Fix m0-deadlock blind spot | No false "deadlock-free" on an m0 deadlock. | ✅ §1 |
-| 4 | Exact-arithmetic guard on negative reach/cover verdicts | A near-boundary `f64` can no longer mint a false "unreachable/uncoverable" — the correctness headline. | ◻ §3 |
+| 4 | Exact-arithmetic guard on negative reach/cover verdicts | A near-boundary `f64` can no longer mint a false "unreachable/uncoverable" — the correctness headline. | ✅ §1.1 |
 | 5 | PNML strict import | Non-unit-weight arcs and >u32 markings error instead of silently importing a different net. | ⚠ §3 (rejects in-tree fixtures) |
 | 6 | Abstain-not-fabricate API | `is_covered_by_s_components → Option<bool>`; drop the structural `Some(false)` deadlock arm. | ⚠ §3 (breaking) |
 | 7 | B2 cluster partition + `rank(C)=c−1` | Supplies the cluster count `c` that `class.rs`'s Rank-Theorem doc already names; tested, no decider. | ◻ §3 |
@@ -88,15 +116,13 @@ architecture, and keeps each subsequent unit a single reviewable decision.
 All references are to branch `workflow-2` (the original PR head). `git diff
 origin/main...workflow-2 -- <path>` shows each unit's slice.
 
-- **Unit 4 — exact guard.** Files: `core/analysis/rational.rs` (exact ℚ),
-  `core/analysis/exact_matrix.rs` (marking equation over ℚ), and the wiring in
-  `api/system/reachability.rs` / `coverability.rs` / `api/net/boundedness.rs`.
-  The principle is small and statable: keep the `f64` LP/ILP path as a *suggester*,
-  and rest every **negative** verdict ("unreachable/uncoverable") on an exact
-  certificate, escalating to the (terminating) state-space explorer when ℚ cannot
-  decide. Honest caveat to carry into the PR: the exact core is RREF-over-ℚ, not
-  the fraction-free Bareiss schedule, so at large scale it may be slower than the
-  path it guards — a measured follow-on, not a regression on the suggestion.
+- **Unit 4 — exact guard. ✅ DELIVERED on `pv/exact-arithmetic` (see §1.1).**
+  Scope landed: `core/analysis/{rational,exact_matrix}.rs` + the exact negative
+  guard wired into `api/system/reachability.rs` and `coverability.rs`. **Not yet
+  done** (clean follow-ons, same pattern): the boundedness verdict path
+  (`api/net/boundedness.rs` / `api/system/boundedness.rs`) still uses the f64 LP
+  as a verdict; and the marked-graph **positive** could additionally be checked
+  exactly (today it is realized by replay, which is sound but needs working fire).
   This is the single highest-value feature; it should be its own PR.
 
 - **Unit 5 — PNML strict import.** File: `api/pnml/convert.rs` (two new
