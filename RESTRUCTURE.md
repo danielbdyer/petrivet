@@ -58,9 +58,10 @@ These three carry **no policy decisions and no API changes** — safe to merge a
 
 ## 1.1 Delivered now — `pv/exact-arithmetic` (unit 4, pushed to the fork)
 
-Stacked on `pv/correctness-fixes` (4 commits). Verified: `cargo test -p petrivet
---lib` → **132 passed, 2 failed** (only the inherited his-WIP tests of §5);
-clippy **identical to baseline** (31 warnings). The headline correctness feature.
+Stacked on `pv/correctness-fixes` (5 commits). Verified: `cargo test -p petrivet
+--lib` → **134 passed, 2 failed** (only the inherited his-WIP tests of §5);
+clippy **identical to baseline** (31 warnings). The headline correctness feature —
+the exact guard now covers **all three** negative verdict paths.
 
 | Commit | One-line value |
 |---|---|
@@ -68,6 +69,7 @@ clippy **identical to baseline** (31 warnings). The headline correctness feature
 | `1b701e5` Exact negative reachability guard | The `Unreachable` verdict rests on `marking_equation_exact` over ℚ, not on the f64 LP/ILP merely failing; the live-marked-graph positive is *realized* (replayed) into a checkable firing word rather than returned as a rounded ILP vector. |
 | `3cc7909` Exact negative coverability guard | The `Uncoverable` verdict rests on `covering_invariant_exact` over ℚ (a non-negative place sub-invariant), not on the f64 covering LP/ILP failing. |
 | `eb7e4da` Mark superseded f64 solvers as retained suggesters | Keeps the orphaned f64 solvers (no longer on a verdict path) with a localized `allow` + note; restores clippy parity. |
+| `612b347` Exact structural-boundedness guard | `Net::is_structurally_bounded` / `is_place_structurally_bounded` no longer return the bare f64 LP; the f64 LP only *suggests* a place-weight vector that `exact_matrix::is_{positive,semipositive}_place_subinvariant` re-verifies over ℚ (`y > 0`, `yᵀ·C ≤ 0`) before any `true`. The orphaned f64 verdict methods on `DenseNet` are removed. |
 
 **Dependency refinement (vs the original §2 note):** unit 4's *core value* — the
 exact **negative** guard — is independent of everything. But the sound,
@@ -84,6 +86,23 @@ the fraction-free Bareiss schedule, so on large instances it may be slower than
 the f64 path it guards. The f64 path is preserved as a suggester; this is a
 measured follow-on, not a regression on the suggestion.
 
+## 1.2 Delivered now — `pv/cluster-rank` (unit 7 / B2, pushed to the fork)
+
+Stacked on `pv/exact-arithmetic` (1 commit; depends on unit 4's `exact_matrix`).
+Verified: **138 passed, 2 failed** (the same his-WIP); clippy at baseline parity.
+Adds `core/analysis/cluster.rs` only — registers no decider, touches nothing else.
+
+- `clusters(&DenseNet)` — the Desel–Esparza consumption-arc cluster partition via
+  union-find (path halving + union by rank), giving the cluster count `c` that
+  `class.rs`'s Rank-Theorem doc names but never defined.
+- `rank_cluster_relation(&DenseNet)` — pairs `c` with the exact ℚ incidence rank;
+  `holds()` tests `rank + 1 == c`. Honestly gated as a **necessary** (not
+  sufficient) free-choice well-formedness condition; tested forward-only, with the
+  union-find partition validated against an independent BFS flood (doctrine #1).
+
+The consumers are the future S/T-component and siphon deciders, so the module
+carries a localized `#![allow(dead_code)]` with a note.
+
 ---
 
 ## 2. The decomposition (full unit sequence)
@@ -99,7 +118,7 @@ Ordered by standalone value × reviewability. Status: ✅ delivered, ◻ specced
 | 4 | Exact-arithmetic guard on negative reach/cover verdicts | A near-boundary `f64` can no longer mint a false "unreachable/uncoverable" — the correctness headline. | ✅ §1.1 |
 | 5 | PNML strict import | Non-unit-weight arcs and >u32 markings error instead of silently importing a different net. | ⚠ §3 (rejects in-tree fixtures) |
 | 6 | Abstain-not-fabricate API | `is_covered_by_s_components → Option<bool>`; drop the structural `Some(false)` deadlock arm. | ⚠ §3 (breaking) |
-| 7 | B2 cluster partition + `rank(C)=c−1` | Supplies the cluster count `c` that `class.rs`'s Rank-Theorem doc already names; tested, no decider. | ◻ §3 |
+| 7 | B2 cluster partition + `rank(C)=c−1` | Supplies the cluster count `c` that `class.rs`'s Rank-Theorem doc already names; tested, no decider. | ✅ §1.2 |
 | 8 | M3 decider registry | Per-class dispatch becomes a pluggable seam for #42/#44; reproduces today's cascade exactly. | ◻ §3 |
 | 9 | Checkable-witness API (the #45 reframe) | Verify an external/SMT-proposed marking cheaply — the one real end-user story for "certificates." | ◻ §3, §4 |
 | 10 | Doctest + `model` module | Make `cargo test --doc` compile and run again. | ◻ §3 (depends on #9) |
@@ -138,10 +157,9 @@ origin/main...workflow-2 -- <path>` shows each unit's slice.
   m0-deadlock fix (unit 3) was deliberately split out of this so the bug fix
   doesn't ride on the policy decision.
 
-- **Unit 7 — B2 cluster.** File: `core/analysis/cluster.rs`. Self-contained;
-  registers no decider. Lands the consumption-arc (Desel–Esparza) cluster
-  partition and the tested relation `rank(C) = c − 1` (gated as *necessary*, not
-  the full equivalence — flagged in-code).
+- **Unit 7 — B2 cluster. ✅ DELIVERED on `pv/cluster-rank` (see §1.2).** Stacked on
+  unit 4 (uses `exact_matrix`'s exact incidence rank). `core/analysis/cluster.rs`,
+  self-contained, no decider.
 
 - **Unit 8 — M3 registry.** Files: `api/model/registry.rs` + `registry/*.rs`.
   Default policy reproduces the current cascade exactly (corpus regression +
