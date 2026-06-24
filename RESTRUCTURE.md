@@ -116,8 +116,8 @@ Ordered by standalone value × reviewability. Status: ✅ delivered, ◻ specced
 | 2 | Fix petgraph mirror order | Graph-derived analyses stop being wrong/flaky. | ✅ §1 |
 | 3 | Fix m0-deadlock blind spot | No false "deadlock-free" on an m0 deadlock. | ✅ §1 |
 | 4 | Exact-arithmetic guard on negative reach/cover verdicts | A near-boundary `f64` can no longer mint a false "unreachable/uncoverable" — the correctness headline. | ✅ §1.1 |
-| 5 | PNML strict import | Non-unit-weight arcs and >u32 markings error instead of silently importing a different net. | ⚠ §3 (rejects in-tree fixtures) |
-| 6 | Abstain-not-fabricate API | `is_covered_by_s_components → Option<bool>`; drop the structural `Some(false)` deadlock arm. | ⚠ §3 (breaking) |
+| 5 | PNML strict import | Non-unit-weight arcs and >u32 markings error instead of silently importing a different net. | ✅ `pv/pnml-strict-import` (⚠ your-call policy) |
+| 6 | Abstain-not-fabricate API | `is_covered_by_s_components → Option<bool>`; drop the structural `Some(false)` deadlock arm. | ✅ `pv/abstain-api` (⚠ breaking, your-call) |
 | 7 | B2 cluster partition + `rank(C)=c−1` | Supplies the cluster count `c` that `class.rs`'s Rank-Theorem doc already names; tested, no decider. | ✅ §1.2 |
 | 8 | M3 decider registry | Per-class dispatch becomes a pluggable seam for #42/#44; reproduces today's cascade exactly. | ◻ §3 |
 | 9 | Checkable-witness API (the #45 reframe) | Verify an external/SMT-proposed marking cheaply — the one real end-user story for "certificates." | ◻ §3, §4 |
