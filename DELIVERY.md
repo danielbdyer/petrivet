@@ -11,7 +11,12 @@ origin/main
  └─ pv/correctness-fixes
      ├─ pv/exact-arithmetic ── pv/cluster-rank
      ├─ pv/pnml-strict-import
-     └─ pv/abstain-api
+     ├─ pv/abstain-api
+     ├─ pv/hygiene
+     ├─ pv/dot-export
+     ├─ pv/printable-types
+     ├─ pv/net-to-dot
+     └─ pv/fire-sequence
 ```
 
 ---
@@ -143,6 +148,36 @@ negative; the arm is dropped (abstain instead). New test
 method (the `MarkedGraph` non-strongly-connected case, and the `AsymmetricChoice`
 Commoner–Hack case) are left unchanged and flagged in the commit message — they
 turn on marking-dependent theory that is the maintainer's call.
+
+---
+
+## Usability and completeness additions (each off `pv/correctness-fixes`)
+
+Independent of the original PR; small, additive, no analysis/verdict surface
+touched.
+
+**`pv/hygiene`** — `examples/playground.rs` no longer compiled (`Marking::support`
+now yields `Place` by value); fixed to read the count via `Marking::get`. Plus a
+`# Errors` doc on `commoner_hack_criterion` and `const fn` on
+`NetBuilder::place_count` / `transition_count`. Clippy 31 → 28.
+
+**`pv/dot-export`** — `StateGraph::to_dot` (issue #9): Graphviz export of the
+reachability/coverability graph (nodes labelled with their marking, edges with the
+fired transition), for both `u32` and `Omega` token types.
+
+**`pv/printable-types`** — `Display` for `Omega` (`ω` / number), `Marking<T>`
+(`{p1: 2, p3: 1}` / `∅`), and `Boundedness` (`bounded (k)` / `unbounded`). These
+public types could previously only be `Debug`-printed; this matches the existing
+`Display` for `NetClass` and `LivenessLevel`.
+
+**`pv/net-to-dot`** — `Net::to_dot` (places as circles, transitions as boxes, arcs
+as edges) and `PetriNet::to_dot` (additionally labels each place with its token
+count and draws enabled transitions bold). Complements the state-graph export.
+
+**`pv/fire-sequence`** — `PetriNet::fire_sequence` fires a sequence of transitions
+in order, returning `Err(NotEnabled(t))` at the first that is not enabled (marking
+left at the last successful firing). The natural way to replay a reachability
+`FiringSequence` witness.
 
 ---
 
