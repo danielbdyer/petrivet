@@ -35,7 +35,7 @@ see §5.
 
 ---
 
-## 1. Delivered now — `pv/correctness-fixes` (3 commits, pushed to the fork)
+## 1. Delivered now — `pv/01-correctness-fixes` (3 commits, pushed to the fork)
 
 Branch off `origin/main`; each commit is one root cause with its regression test;
 each is independently cherry-pickable (disjoint files). Verified:
@@ -56,9 +56,9 @@ NodeIndex correspondence matches how the arrays are later indexed.
 
 These three carry **no policy decisions and no API changes** — safe to merge as-is.
 
-## 1.1 Delivered now — `pv/exact-arithmetic` (unit 4, pushed to the fork)
+## 1.1 Delivered now — `pv/02-exact-arithmetic` (unit 4, pushed to the fork)
 
-Stacked on `pv/correctness-fixes` (5 commits). Verified: `cargo test -p petrivet
+Stacked on `pv/01-correctness-fixes` (5 commits). Verified: `cargo test -p petrivet
 --lib` → **134 passed, 2 failed** (only the inherited his-WIP tests of §5);
 clippy **identical to baseline** (31 warnings). The headline correctness feature —
 the exact guard now covers **all three** negative verdict paths.
@@ -77,7 +77,7 @@ capability-preserving **positive** path for live marked graphs realizes the
 suggested firing vector by *replaying* it (`realize_firing_vector`), which needs a
 working `fire` — i.e. **unit 1**. On the un-fixed baseline, `fire` is inert, so
 realization would silently always fail (a hidden capability regression that
-vanishes once unit 1 lands). So unit 4 is **stacked on `pv/correctness-fixes`**,
+vanishes once unit 1 lands). So unit 4 is **stacked on `pv/01-correctness-fixes`**,
 not built off raw `origin/main`. This is natural ordering — the correctness fixes
 merge first regardless.
 
@@ -86,9 +86,9 @@ the fraction-free Bareiss schedule, so on large instances it may be slower than
 the f64 path it guards. The f64 path is preserved as a suggester; this is a
 measured follow-on, not a regression on the suggestion.
 
-## 1.2 Delivered now — `pv/cluster-rank` (unit 7 / B2, pushed to the fork)
+## 1.2 Delivered now — `pv/03-cluster-rank` (unit 7 / B2, pushed to the fork)
 
-Stacked on `pv/exact-arithmetic` (1 commit; depends on unit 4's `exact_matrix`).
+Stacked on `pv/02-exact-arithmetic` (1 commit; depends on unit 4's `exact_matrix`).
 Verified: **138 passed, 2 failed** (the same his-WIP); clippy at baseline parity.
 Adds `core/analysis/cluster.rs` only — registers no decider, touches nothing else.
 
@@ -116,8 +116,8 @@ Ordered by standalone value × reviewability. Status: ✅ delivered, ◻ specced
 | 2 | Fix petgraph mirror order | Graph-derived analyses stop being wrong/flaky. | ✅ §1 |
 | 3 | Fix m0-deadlock blind spot | No false "deadlock-free" on an m0 deadlock. | ✅ §1 |
 | 4 | Exact-arithmetic guard on negative reach/cover verdicts | A near-boundary `f64` can no longer mint a false "unreachable/uncoverable" — the correctness headline. | ✅ §1.1 |
-| 5 | PNML strict import | Non-unit-weight arcs and >u32 markings error instead of silently importing a different net. | ✅ `pv/pnml-strict-import` (⚠ your-call policy) |
-| 6 | Abstain-not-fabricate API | `is_covered_by_s_components → Option<bool>`; drop the structural `Some(false)` deadlock arm. | ✅ `pv/abstain-api` (⚠ breaking, your-call) |
+| 5 | PNML strict import | Non-unit-weight arcs and >u32 markings error instead of silently importing a different net. | ✅ `pv/09-pnml-strict-import` (⚠ your-call policy) |
+| 6 | Abstain-not-fabricate API | `is_covered_by_s_components → Option<bool>`; drop the structural `Some(false)` deadlock arm. | ✅ `pv/10-abstain-api` (⚠ breaking, your-call) |
 | 7 | B2 cluster partition + `rank(C)=c−1` | Supplies the cluster count `c` that `class.rs`'s Rank-Theorem doc already names; tested, no decider. | ✅ §1.2 |
 | 8 | M3 decider registry | Per-class dispatch becomes a pluggable seam for #42/#44; reproduces today's cascade exactly. | ◻ §3 |
 | 9 | Checkable-witness API (the #45 reframe) | Verify an external/SMT-proposed marking cheaply — the one real end-user story for "certificates." | ◻ §3, §4 |
@@ -135,7 +135,7 @@ architecture, and keeps each subsequent unit a single reviewable decision.
 All references are to branch `workflow-2` (the original PR head). `git diff
 origin/main...workflow-2 -- <path>` shows each unit's slice.
 
-- **Unit 4 — exact guard. ✅ DELIVERED on `pv/exact-arithmetic` (see §1.1).**
+- **Unit 4 — exact guard. ✅ DELIVERED on `pv/02-exact-arithmetic` (see §1.1).**
   Scope landed: `core/analysis/{rational,exact_matrix}.rs` + the exact negative
   guard wired into `api/system/reachability.rs` and `coverability.rs`. **Not yet
   done** (clean follow-ons, same pattern): the boundedness verdict path
@@ -157,7 +157,7 @@ origin/main...workflow-2 -- <path>` shows each unit's slice.
   m0-deadlock fix (unit 3) was deliberately split out of this so the bug fix
   doesn't ride on the policy decision.
 
-- **Unit 7 — B2 cluster. ✅ DELIVERED on `pv/cluster-rank` (see §1.2).** Stacked on
+- **Unit 7 — B2 cluster. ✅ DELIVERED on `pv/03-cluster-rank` (see §1.2).** Stacked on
   unit 4 (uses `exact_matrix`'s exact incidence rank). `core/analysis/cluster.rs`,
   self-contained, no decider.
 

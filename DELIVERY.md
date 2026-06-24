@@ -8,20 +8,23 @@ untouched. Clippy is at or below the baseline (31 lib warnings) on every branch.
 
 ```
 origin/main
- └─ pv/correctness-fixes
-     ├─ pv/exact-arithmetic ── pv/cluster-rank
-     ├─ pv/pnml-strict-import
-     ├─ pv/abstain-api
-     ├─ pv/hygiene
-     ├─ pv/dot-export
-     ├─ pv/printable-types
-     ├─ pv/net-to-dot
-     └─ pv/fire-sequence
+ └─ pv/01-correctness-fixes
+     ├─ pv/02-exact-arithmetic ── pv/03-cluster-rank
+     ├─ pv/04-dot-export
+     ├─ pv/05-printable-types
+     ├─ pv/06-net-to-dot
+     ├─ pv/07-fire-sequence
+     ├─ pv/08-hygiene
+     ├─ pv/09-pnml-strict-import
+     └─ pv/10-abstain-api
 ```
+
+Branch names are prefixed with their merge order: `01` first, `02 → 03` a chain,
+`04`–`10` each depending only on `01`.
 
 ---
 
-## `pv/correctness-fixes` (off `origin/main`)
+## `pv/01-correctness-fixes` (off `origin/main`)
 
 Three independent bug fixes, each with a regression test. On `origin/main` six
 library tests fail; this branch fixes four of them (the other two are the
@@ -51,11 +54,11 @@ marking first, exactly once. New test `initial_marking_deadlock_is_detected`.
 
 ---
 
-## `pv/exact-arithmetic` (off `pv/correctness-fixes`)
+## `pv/02-exact-arithmetic` (off `pv/01-correctness-fixes`)
 
 Makes the negative verdicts of reachability, coverability, and boundedness rest on
 exact rational arithmetic instead of the floating-point LP/ILP merely failing.
-Stacked on `pv/correctness-fixes` because the realized-positive path (below) calls
+Stacked on `pv/01-correctness-fixes` because the realized-positive path (below) calls
 `try_fire`, which is inert until that branch's fire fix lands.
 
 **Exact-rational linear-algebra core** — `core/analysis/rational.rs`,
@@ -98,7 +101,7 @@ The now-orphaned f64 verdict methods on `DenseNet` are removed.
 
 ---
 
-## `pv/cluster-rank` (off `pv/exact-arithmetic`)
+## `pv/03-cluster-rank` (off `pv/02-exact-arithmetic`)
 
 **Cluster partition and rank relation** — `core/analysis/cluster.rs`,
 `core/analysis/mod.rs`.
@@ -113,7 +116,7 @@ Depends on `exact_matrix` for the rank.
 
 ---
 
-## `pv/pnml-strict-import` (off `pv/correctness-fixes`)
+## `pv/09-pnml-strict-import` (off `pv/01-correctness-fixes`)
 
 **Reject silent misimports** — `api/pnml/convert.rs`.
 The P/T converter parsed but ignored a non-unit arc `<inscription>` weight
@@ -127,7 +130,7 @@ support (issue #57); the reject-vs-clamp policy is the maintainer's to set.
 
 ---
 
-## `pv/abstain-api` (off `pv/correctness-fixes`)
+## `pv/10-abstain-api` (off `pv/01-correctness-fixes`)
 
 Two predicates returned an invented negative rather than abstaining. Breaking API
 change; a deliberate soundness-policy stance the maintainer ratifies.
@@ -151,30 +154,30 @@ turn on marking-dependent theory that is the maintainer's call.
 
 ---
 
-## Usability and completeness additions (each off `pv/correctness-fixes`)
+## Usability and completeness additions (each off `pv/01-correctness-fixes`)
 
 Independent of the original PR; small, additive, no analysis/verdict surface
 touched.
 
-**`pv/hygiene`** — `examples/playground.rs` no longer compiled (`Marking::support`
+**`pv/08-hygiene`** — `examples/playground.rs` no longer compiled (`Marking::support`
 now yields `Place` by value); fixed to read the count via `Marking::get`. Plus a
 `# Errors` doc on `commoner_hack_criterion` and `const fn` on
 `NetBuilder::place_count` / `transition_count`. Clippy 31 → 28.
 
-**`pv/dot-export`** — `StateGraph::to_dot` (issue #9): Graphviz export of the
+**`pv/04-dot-export`** — `StateGraph::to_dot` (issue #9): Graphviz export of the
 reachability/coverability graph (nodes labelled with their marking, edges with the
 fired transition), for both `u32` and `Omega` token types.
 
-**`pv/printable-types`** — `Display` for `Omega` (`ω` / number), `Marking<T>`
+**`pv/05-printable-types`** — `Display` for `Omega` (`ω` / number), `Marking<T>`
 (`{p1: 2, p3: 1}` / `∅`), and `Boundedness` (`bounded (k)` / `unbounded`). These
 public types could previously only be `Debug`-printed; this matches the existing
 `Display` for `NetClass` and `LivenessLevel`.
 
-**`pv/net-to-dot`** — `Net::to_dot` (places as circles, transitions as boxes, arcs
+**`pv/06-net-to-dot`** — `Net::to_dot` (places as circles, transitions as boxes, arcs
 as edges) and `PetriNet::to_dot` (additionally labels each place with its token
 count and draws enabled transitions bold). Complements the state-graph export.
 
-**`pv/fire-sequence`** — `PetriNet::fire_sequence` fires a sequence of transitions
+**`pv/07-fire-sequence`** — `PetriNet::fire_sequence` fires a sequence of transitions
 in order, returning `Err(NotEnabled(t))` at the first that is not enabled (marking
 left at the last successful firing). The natural way to replay a reachability
 `FiringSequence` witness.
