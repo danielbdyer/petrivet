@@ -8,22 +8,23 @@
 
 #![cfg(feature = "pnml")]
 
-use petrivet::pnml::convert::PetriNetKind;
-use petrivet::pnml::labels::NetLabels;
+use petrivet::net::Net;
 use petrivet::pnml::PnmlDocument;
-use petrivet::prelude::{Net, PetriNet};
+use petrivet::pnml::import::PetriNetKind;
+use petrivet::pnml::labels::NetLabels;
+use petrivet::system::PetriNet;
+use petrivet::system::boundedness::Boundedness;
+use petrivet::system::deadlock_freedom::DeadlockFreedomEffort;
+use petrivet::system::liveness::LivenessEffort;
 
 fn load(path: &str) -> PnmlDocument {
     let xml = std::fs::read_to_string(path)
         .unwrap_or_else(|e| panic!("could not read fixture {path}: {e}"));
-    PnmlDocument::from_xml(&xml)
-        .unwrap_or_else(|e| panic!("could not parse fixture {path}: {e}"))
+    PnmlDocument::from_xml(&xml).unwrap_or_else(|e| panic!("could not parse fixture {path}: {e}"))
 }
 
 fn first_pt_net(doc: &PnmlDocument) -> (PetriNet<Net>, Box<NetLabels>) {
-    let sys = doc.nets[0]
-        .to_pt_system()
-        .expect("conversion failed");
+    let sys = doc.nets[0].to_pt_system().expect("conversion failed");
     let labels = sys.labels.as_ref().unwrap().clone();
     (sys, labels)
 }
@@ -77,7 +78,10 @@ fn philo_is_bounded() {
     let (sys, _) = first_pt_net(&doc);
     // The philosophers net is structurally bounded (no place can accumulate
     // tokens indefinitely given any firing sequence).
-    assert!(sys.is_structurally_bounded(), "philosophers net should be structurally bounded");
+    assert!(
+        sys.is_structurally_bounded(),
+        "philosophers net should be structurally bounded"
+    );
 }
 
 // ── Token ring (token-ring.pnml) ──────────────────────────────────────────────
@@ -113,7 +117,10 @@ fn token_ring_net_id_preserved() {
     let doc = load("tests/fixtures/token-ring.pnml");
     let (_, labels) = first_pt_net(&doc);
     // The net id in the file is a long opaque string; we just check it's present.
-    assert!(labels.net_id().is_some(), "net id should be preserved in labels");
+    assert!(
+        labels.net_id().is_some(),
+        "net id should be preserved in labels"
+    );
 }
 
 #[test]
@@ -127,7 +134,10 @@ fn token_ring_is_not_structurally_bounded() {
     // structural one.
     let doc = load("tests/fixtures/token-ring.pnml");
     let (sys, _) = first_pt_net(&doc);
-    assert!(!sys.is_structurally_bounded(), "token-ring has source places; not structurally bounded");
+    assert!(
+        !sys.is_structurally_bounded(),
+        "token-ring has source places; not structurally bounded"
+    );
 }
 
 // ── Swimming pool (swimming-pool.pnml / Piscine) ──────────────────────────────
@@ -164,14 +174,20 @@ fn pool_initial_marking() {
 fn pool_is_structurally_bounded() {
     let doc = load("tests/fixtures/swimming-pool.pnml");
     let (sys, _) = first_pt_net(&doc);
-    assert!(sys.is_structurally_bounded(), "swimming pool should be structurally bounded");
+    assert!(
+        sys.is_structurally_bounded(),
+        "swimming pool should be structurally bounded"
+    );
 }
 
 #[test]
 fn pool_is_bounded() {
     let doc = load("tests/fixtures/swimming-pool.pnml");
     let (sys, _) = first_pt_net(&doc);
-    assert!(sys.is_bounded(), "swimming pool should be bounded under initial marking");
+    assert!(
+        sys.is_bounded().call().unwrap(),
+        "swimming pool should be bounded under initial marking"
+    );
 }
 
 #[test]
@@ -197,7 +213,7 @@ fn to_petri_nets_batch() {
 
 #[test]
 fn mcc_champagne_h04_t1u_parses() {
-    let doc = load("tests/fixtures/Champagne/PT/champagne_H04_T1U.pnml");
+    let doc = load("tests/fixtures/champagne_H04_T1U.pnml");
     let (sys, labels) = first_pt_net(&doc);
     assert_eq!(labels.net_name(), Some("champagne_H04_T1U"));
     assert_eq!(sys.place_count(), 285);
@@ -216,7 +232,7 @@ fn mcc_champagne_h04_t1u_parses() {
 
 #[test]
 fn mcc_cops_and_robers_circular_small_parses() {
-    let doc = load("tests/fixtures/CopsAndRobbers/PT/CopsAndRobbers-PT-Circular-Random-L005X001.pnml");
+    let doc = load("tests/fixtures/CopsAndRobbers-PT-Circular-Random-L005X001.pnml");
     let (sys, labels) = first_pt_net(&doc);
     assert_eq!(
         labels.net_name(),
@@ -225,4 +241,166 @@ fn mcc_cops_and_robers_circular_small_parses() {
     assert!(sys.place_count() >= 8);
     assert!(sys.transition_count() >= 1);
     assert!(labels.nupn().is_none(), "this fixture has no NUPN block");
+}
+
+// ── Export round trips ────────────────────────────────────────────────────────
+
+fn assert_round_trips(path: &str) {
+    let (sys, labels) = first_pt_net(&load(path));
+    let xml = sys.to_pnml().expect("export failed");
+    let again = PetriNet::from_pnml(&xml).expect("re-import failed");
+    let again_labels = again.labels.as_ref().unwrap();
+
+    assert_eq!(again.place_count(), sys.place_count(), "{path}");
+    assert_eq!(again.transition_count(), sys.transition_count(), "{path}");
+    assert_eq!(again.arc_count(), sys.arc_count(), "{path}");
+    assert_eq!(
+        again.marking().total_tokens(),
+        sys.marking().total_tokens(),
+        "{path}"
+    );
+    assert_eq!(again_labels.net_id(), labels.net_id(), "{path}");
+    assert_eq!(again_labels.net_name(), labels.net_name(), "{path}");
+    assert_eq!(
+        again_labels.named_places().count(),
+        labels.named_places().count(),
+        "{path}"
+    );
+    assert_eq!(again_labels.nupn(), labels.nupn(), "{path}");
+}
+
+#[test]
+fn export_round_trips_fixtures() {
+    for entry in std::fs::read_dir("tests/fixtures").unwrap() {
+        let path = entry.unwrap().path();
+        if path.extension().is_some_and(|e| e == "pnml") {
+            let doc = load(path.to_str().unwrap());
+            if doc.nets[0].to_pt_system().is_ok() {
+                assert_round_trips(path.to_str().unwrap());
+            }
+        }
+    }
+}
+
+#[test]
+fn producer_consumer_methods_are_marked_graph() {
+    let doc = load("tests/fixtures/producer_consumer.pnml");
+    let (sys, _) = first_pt_net(&doc);
+
+    assert_eq!(sys.is_deadlock_free().call().unwrap(), true);
+    assert_eq!(sys.boundedness().call().unwrap(), Boundedness::Bounded(5));
+}
+
+#[test]
+fn philo_methods_fall_back_to_state_space_where_no_shortcut_applies() {
+    let doc = load("tests/fixtures/philo.pnml");
+    let (sys, _) = first_pt_net(&doc);
+
+    // The efficient variants decline instead of exploring the state space.
+    assert!(sys.is_deadlock_free().effort(DeadlockFreedomEffort::Efficient).call().is_none());
+    assert!(sys.liveness().effort(LivenessEffort::Efficient).call().is_none());
+    assert!(!sys.is_deadlock_free().call().unwrap());
+    assert_eq!(sys.boundedness().call().unwrap(), Boundedness::Bounded(1));
+}
+// ── Deadlines ─────────────────────────────────────────────────────────────────
+
+/// A general net with no structural shortcut for deadlock-freedom: only exhausting the state
+/// space proves that it is deadlock-free.
+const DEADLOCK_FREE_ONLY_BY_EXPLORATION: &str = r#"<?xml version="1.0"?>
+<pnml xmlns="http://www.pnml.org/version-2009/grammar/pnml"><net id="n" type="http://www.pnml.org/version-2009/grammar/ptnet"><page id="pg">
+<place id="p0"><initialMarking><text>2</text></initialMarking></place>
+<place id="p1"><initialMarking><text>1</text></initialMarking></place>
+<place id="p2"><initialMarking><text>2</text></initialMarking></place>
+<transition id="t0"/><transition id="t1"/><transition id="t2"/><transition id="t3"/>
+<arc id="a0" source="p0" target="t1"/><arc id="a1" source="p0" target="t2"/><arc id="a2" source="p0" target="t3"/>
+<arc id="a3" source="p1" target="t0"/><arc id="a4" source="p1" target="t1"/><arc id="a5" source="t0" target="p1"/>
+<arc id="a6" source="t1" target="p2"/><arc id="a7" source="t2" target="p1"/><arc id="a8" source="t3" target="p1"/>
+</page></net></pnml>"#;
+
+/// An exhausted search is an answer, not a give-up.
+#[test]
+fn exhausting_the_state_space_proves_deadlock_freedom() {
+    let doc = PnmlDocument::from_xml(DEADLOCK_FREE_ONLY_BY_EXPLORATION).unwrap();
+    let (sys, _) = first_pt_net(&doc);
+
+    assert_eq!(sys.is_deadlock_free().call(), Some(true));
+}
+
+/// The Commoner/Hack encoding of a large net is big enough that Z3 spends minutes asserting it.
+/// The deadline must cut that short, and must leave the thread's solver usable afterwards.
+#[cfg(feature = "z3")]
+#[test]
+fn deadline_bounds_deadlock_freedom_of_a_large_net() {
+    let doc = load("tests/fixtures/aslink_01_a.pnml");
+    let (sys, _) = first_pt_net(&doc);
+
+    let start = std::time::Instant::now();
+    let answer = sys.is_deadlock_free().timeout(std::time::Duration::from_millis(50)).call();
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "took {:?}", start.elapsed());
+    assert_ne!(answer, Some(false), "a give-up must not be reported as a deadlock");
+
+    // an interrupt must not leave this thread's Z3 context unusable: a later query that
+    // needs the solver has to be answered, quickly and correctly
+    let mut b = petrivet::net::builder::NetBuilder::new();
+    let [p0, p1] = b.add_places();
+    let [t0, t1] = b.add_transitions();
+    b.add_arc((p0, t0));
+    b.add_arc((t0, p1));
+    b.add_arc((p1, t1));
+    b.add_arc((t1, p0));
+    let sys = PetriNet::new(b.build().unwrap(), [(p0, 1)]);
+    let start = std::time::Instant::now();
+    let reachable = sys
+        .analyze_reachability_within([(p1, 1)], std::time::Duration::from_secs(30), None)
+        .is_reachable();
+    assert!(reachable);
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "took {:?}", start.elapsed());
+}
+
+/// Liveness of a general net falls back to the state space, which must respect the deadline too.
+#[test]
+fn deadline_bounds_liveness_of_a_large_net() {
+    let doc = load("tests/fixtures/aslink_01_a.pnml");
+    let (sys, _) = first_pt_net(&doc);
+
+    let start = std::time::Instant::now();
+    let answer = sys.is_live().timeout(std::time::Duration::from_millis(50)).call();
+    assert!(start.elapsed() < std::time::Duration::from_secs(10), "took {:?}", start.elapsed());
+    assert_eq!(answer, None);
+}
+
+fn two_place_net_with_inscription(inscription: &str) -> String {
+    format!(
+        r#"<pnml xmlns="http://www.pnml.org/version-2009/grammar/pnml">
+  <net id="n" type="http://www.pnml.org/version-2009/grammar/ptnet"><page id="pg">
+    <place id="p0"><initialMarking><text>2</text></initialMarking></place>
+    <place id="p1"/>
+    <transition id="t0"/>
+    <arc id="a0" source="p0" target="t0">{inscription}</arc>
+    <arc id="a1" source="t0" target="p1"/>
+  </page></net>
+</pnml>"#
+    )
+}
+
+/// petrivet nets are ordinary: a weighted arc must be an error, not silently read as weight 1.
+#[test]
+fn arcs_heavier_than_one_are_rejected() {
+    use petrivet::pnml::import::PnmlConversionError;
+
+    let weighted = two_place_net_with_inscription("<inscription><text>3</text></inscription>");
+    let doc = PnmlDocument::from_xml(&weighted).unwrap();
+    match doc.nets[0].to_pt_system() {
+        Err(PnmlConversionError::UnsupportedArcWeight { arc_id, weight }) => {
+            assert_eq!((arc_id.as_str(), weight), ("a0", 3));
+        }
+        other => panic!("expected UnsupportedArcWeight, got {:?}", other.map(|_| ())),
+    }
+    assert!(PetriNet::from_pnml(&weighted).is_err());
+
+    // an explicit weight of one, and no inscription at all, are both ordinary
+    for inscription in ["<inscription><text>1</text></inscription>", ""] {
+        let ordinary = two_place_net_with_inscription(inscription);
+        assert!(PetriNet::from_pnml(&ordinary).is_ok(), "inscription {inscription:?}");
+    }
 }

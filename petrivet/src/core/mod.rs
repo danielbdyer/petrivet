@@ -1,9 +1,6 @@
-pub mod net;
-pub mod marking;
-pub mod state_space;
-pub mod analysis;
+pub mod cegar;
 pub mod mapping;
-pub mod class;
-pub mod liveness;
-pub mod boundedness;
-pub mod coverability;
+pub mod net;
+pub mod state_space;
+pub mod system;
+pub mod solver;

@@ -3,10 +3,11 @@
 //! ensuring that only one process can be in the critical section at a time.
 //! The mutual exclusion is enforced by a shared mutex place.
 
-use petrivet::prelude::{NetBuilder, PetriNet};
+use petrivet::net::Net;
+use petrivet::system::PetriNet;
 
 fn main() {
-    let mut b = NetBuilder::new();
+    let mut b = Net::builder();
 
     // process 1
     let [idle1, wait1, crit1] = b.add_places();
@@ -32,9 +33,11 @@ fn main() {
     // dangerous situation: both processes in critical section at the same time
     let dangerous = [(crit1, 1), (crit2, 1)];
 
-    assert!(
-        !PetriNet::new(&net, initial_marking).is_coverable(dangerous),
+    assert_eq!(
+        PetriNet::new(&net, initial_marking).is_coverable().target(dangerous).call(), Some(false),
         "Mutual exclusion failed: both processes can be in critical section simultaneously."
     );
-    println!("Mutual exclusion verified: both processes cannot be in critical section simultaneously.");
+    println!(
+        "Mutual exclusion verified: both processes cannot be in critical section simultaneously."
+    );
 }

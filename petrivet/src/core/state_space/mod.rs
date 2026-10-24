@@ -1,24 +1,14 @@
-pub mod reachability;
 pub mod coverability;
+pub mod reachability;
 
-use crate::core::marking::IdxMarking;
 use crate::core::net::{DenseNet, TransitionIdx};
+use crate::core::system::marking::IdxMarking;
+use crate::state_space::ExplorationOrder;
 use ahash::{HashMap, HashMapExt};
 use petgraph::graph::NodeIndex;
 use std::collections::VecDeque;
 use std::hash::Hash;
 use std::iter::Sum;
-use std::ops::ControlFlow;
-
-/// Controls frontier traversal order.
-#[derive(Debug, Default, Copy, Clone, PartialEq, Eq)]
-pub enum ExplorationOrder {
-    /// Breadth-first: `path_to` returns shortest firing sequences.
-    #[default]
-    BreadthFirst,
-    /// Depth-first: may use less memory on wide state spaces.
-    DepthFirst,
-}
 
 /// Operations on a token count needed for state space exploration.
 pub trait TokenOps: Clone + Copy + Eq + Ord + Hash + Sum {
@@ -72,11 +62,7 @@ impl<'a, T: TokenOps> DenseStateGraphExplorer<'a, T> {
     /// Seeds the frontier with source transitions (empty preset, always
     /// enabled) plus transitions whose presets overlap with the support
     /// of the initial marking.
-    pub fn new(
-        net: &'a DenseNet,
-        initial_marking: IdxMarking<T>,
-        order: ExplorationOrder
-    ) -> Self {
+    pub fn new(net: &'a DenseNet, initial_marking: IdxMarking<T>, order: ExplorationOrder) -> Self {
         let mut graph = petgraph::Graph::new();
         let initial_idx = graph.add_node(initial_marking.clone());
 
@@ -85,12 +71,11 @@ impl<'a, T: TokenOps> DenseStateGraphExplorer<'a, T> {
             .filter(|&t| net.preset_t[t].is_empty())
             .collect();
 
-        let frontier: VecDeque<_> =
-            Self::potentially_enabled_transitions(
-                &initial_marking,
-                &net.postset_p,
-                &source_transitions,
-            )
+        let frontier: VecDeque<_> = Self::potentially_enabled_transitions(
+            &initial_marking,
+            &net.postset_p,
+            &source_transitions,
+        )
             .into_iter()
             .map(|t_idx| (initial_idx, t_idx))
             .collect();
@@ -98,9 +83,19 @@ impl<'a, T: TokenOps> DenseStateGraphExplorer<'a, T> {
         let mut seen = HashMap::new();
         seen.insert(initial_marking, initial_idx);
 
-        let state_space = DenseStateGraph { net, initial_idx, graph, seen };
+        let state_space = DenseStateGraph {
+            net,
+            initial_idx,
+            graph,
+            seen,
+        };
 
-        Self { state_space, order, frontier, source_transitions }
+        Self {
+            state_space,
+            order,
+            frontier,
+            source_transitions,
+        }
     }
 
     /// Compute the transitions which could possibly be enabled at a marking, based on
@@ -117,6 +112,7 @@ impl<'a, T: TokenOps> DenseStateGraphExplorer<'a, T> {
     ) -> Vec<TransitionIdx> {
         let mut transitions = marking
             .support()
+            .into_iter()
             .flat_map(|p| postset_p[p].iter().copied())
             .collect::<Vec<_>>();
         transitions.sort_unstable();
@@ -147,7 +143,9 @@ impl<'a, T: TokenOps> DenseStateGraphExplorer<'a, T> {
     /// Whether a transition is enabled at the marking stored in `node`.
     pub fn is_enabled(&self, marking_idx: NodeIndex, t_idx: TransitionIdx) -> bool {
         let marking = &self.state_space.graph[marking_idx];
-        self.state_space.net.preset_t[t_idx].iter().all(|&p| marking[p].at_least_one())
+        self.state_space.net.preset_t[t_idx]
+            .iter()
+            .all(|&p| marking[p].at_least_one())
     }
 
     /// Compute the marking that results from firing `t` at `node`.
@@ -155,12 +153,7 @@ impl<'a, T: TokenOps> DenseStateGraphExplorer<'a, T> {
     /// Caller must ensure the transition is enabled.
     pub fn fire(&self, node: NodeIndex, t: TransitionIdx) -> IdxMarking<T> {
         let mut result = self.state_space.graph[node].clone();
-        for &p in &self.state_space.net.preset_t[t] {
-            result[p].decrement();
-        }
-        for &p in &self.state_space.net.postset_t[t] {
-            result[p].increment();
-        }
+        self.state_space.net.fire(t, &mut result);
         result
     }
 
@@ -207,9 +200,34 @@ impl<'a, T: TokenOps> DenseStateGraphExplorer<'a, T> {
         &self,
         mut predicate: impl FnMut(&IdxMarking<T>) -> bool,
     ) -> Option<&IdxMarking<T>> {
-        self.state_space.seen.values()
+        self.state_space
+            .seen
+            .values()
             .map(|&node| self.state_space.marking_at(node))
             .find(|marking| predicate(marking))
+    }
+}
+
+/// Number of calls to a [`deadline_checker`] between two reads of the clock.
+const DEADLINE_CHECK_INTERVAL: u32 = 1000;
+
+/// Returns a function that reports whether `deadline` has passed.
+///
+/// Reading the clock on every explored state would dominate the cost of exploration, so the
+/// returned function consults it only once every [`DEADLINE_CHECK_INTERVAL`] calls
+/// and answers `false` in between. Without a deadline it always answers `false`.
+pub fn deadline_checker(deadline: Option<std::time::Instant>) -> impl FnMut() -> bool {
+    let mut calls_since_last_check = 0;
+    move || {
+        let Some(deadline) = deadline else {
+            return false;
+        };
+        calls_since_last_check += 1;
+        if calls_since_last_check < DEADLINE_CHECK_INTERVAL {
+            return false;
+        }
+        calls_since_last_check = 0;
+        std::time::Instant::now() >= deadline
     }
 }
 
@@ -222,52 +240,46 @@ where
     ///
     /// Otherwise, drive exploration until either a marking satisfying `predicate` is found
     /// (and returned), or the frontier is exhausted (in which case `None` is returned).
-    /// See [`search`](DenseStateGraphExplorer::search) for the latter behavior.
-    ///
-    /// **Does not terminate** if there are infinite states and the predicate never returns true.
-    pub fn find(
-        &mut self,
-        mut predicate: impl FnMut(&IdxMarking<T>) -> bool,
-    ) -> Option<&IdxMarking<T>> {
-        // todo: possible to call .any_matched() here instead?
-        for &node in self.state_space.seen.values() {
-            if predicate(self.state_space.marking_at(node)) {
-                return Some(self.state_space.marking_at(node));
-            }
-        }
-        self.search(predicate)
-    }
-
-    /// Drive exploration until either:
-    ///
-    /// - `predicate` returns `true` for some reachable marking — in which
-    ///   case the marking is returned immediately, or
-    /// - the frontier is exhausted (the entire reachability graph has been
-    ///   explored without the predicate ever firing) — in which case
-    ///   `None` is returned.
+    /// See [`find`](DenseStateGraphExplorer::find) for the latter behavior.
     ///
     /// **Does not terminate** if there are infinite states and the predicate never returns true.
     pub fn search(
         &mut self,
         mut predicate: impl FnMut(&IdxMarking<T>) -> bool,
+        deadline: Option<std::time::Instant>,
     ) -> Option<&IdxMarking<T>> {
+        for &node in self.state_space.seen.values() {
+            if predicate(self.state_space.marking_at(node)) {
+                return Some(self.state_space.marking_at(node));
+            }
+        }
+        self.find(predicate, deadline)
+    }
+
+    /// Drive exploration until either:
+    ///
+    /// - `predicate` returns `true` for some reachable marking, in which
+    ///   case the marking is returned immediately, or
+    /// - the frontier is exhausted (the entire reachability graph has been
+    ///   explored without the predicate ever firing), in which case
+    ///   `None` is returned.
+    ///
+    /// **Does not terminate** if there are infinite states and the predicate never returns true.
+    pub fn find(
+        &mut self,
+        mut predicate: impl FnMut(&IdxMarking<T>) -> bool,
+        deadline: Option<std::time::Instant>,
+    ) -> Option<&IdxMarking<T>> {
+        let mut time_is_up = deadline_checker(deadline);
         while let Some((_t_idx, node_idx, is_new)) = self.explore_next() {
             if is_new && predicate(self.state_space.marking_at(node_idx)) {
                 return Some(self.state_space.marking_at(node_idx));
             }
-        }
-        None
-    }
-
-    pub fn visit<F, B>(&mut self, mut visitor: F) -> Option<B>
-    where
-        F: FnMut((TransitionIdx, NodeIndex, bool)) -> ControlFlow<B>,
-    {
-        loop {
-            if let ControlFlow::Break(b) = visitor(self.explore_next()?) {
-                return Some(b);
+            if time_is_up() {
+                return None;
             }
         }
+        None
     }
 }
 
@@ -297,7 +309,7 @@ impl<T: TokenOps> DenseStateGraph<'_, T> {
     }
 
     /// Returns an iterator over all markings in the graph.
-    pub fn markings(&self) -> impl Iterator<Item = &IdxMarking<T>> + '_ {
+    pub fn markings(&self) -> impl Iterator<Item=&IdxMarking<T>> + '_ {
         self.graph.node_weights()
     }
 
@@ -317,7 +329,7 @@ impl<T: TokenOps> DenseStateGraph<'_, T> {
     }
 
     /// Returns an iterator over markings which enable no transitions (deadlocks).
-    pub fn deadlocks(&self) -> impl Iterator<Item = &IdxMarking<T>> {
+    pub fn deadlocks(&self) -> impl Iterator<Item=&IdxMarking<T>> {
         self.graph
             .node_indices()
             .filter(|&idx| {
@@ -349,7 +361,9 @@ impl<T: TokenOps> DenseStateGraph<'_, T> {
         let firing_sequence = node_path
             .array_windows()
             .map(|&[m1_idx, m2_idx]| {
-                self.graph.find_edge(m1_idx, m2_idx).expect("edge must exist")
+                self.graph
+                    .find_edge(m1_idx, m2_idx)
+                    .expect("edge must exist")
             })
             .map(|edge_idx| self.graph[edge_idx])
             .collect();

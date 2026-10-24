@@ -7,8 +7,9 @@
 //! # Quick start
 //!
 //! ```
-//! use petrivet::builder::NetBuilder;
-//! use petrivet::net::system::PetriNet;
+//! use petrivet::net::builder::NetBuilder;
+//! use petrivet::system::marking::Marking;
+//! use petrivet::system::PetriNet;
 //!
 //! // Build a simple producer-consumer net
 //! let mut b = NetBuilder::new();
@@ -17,17 +18,17 @@
 //! b.add_arcs((idle, start, busy, finish, idle));
 //! let net = b.build().expect("valid net");
 //!
-//! let mut sys = PetriNet::new(&net, [(idle, 1)].into());
+//! let mut sys = PetriNet::new(&net, [(idle, 1)]);
 //!
 //! // Simulation
 //! assert!(sys.is_enabled(start));
 //! sys.fire_unchecked(start);
-//! assert_eq!(sys.current_marking(), [(busy, 1)].into());
+//! assert_eq!(sys.marking(), Marking::from([(busy, 1)]));
 //!
 //! // Behavioral analysis
-//! let sys = PetriNet::new(&net, [(idle, 1)].into());
-//! assert!(sys.is_bounded());
-//! assert!(sys.is_live());
+//! let sys = PetriNet::new(&net, [(idle, 1)]);
+//! assert!(sys.is_bounded().call().unwrap());
+//! assert!(sys.is_live().call().unwrap());
 //! ```
 //!
 //! # Firing patterns
@@ -35,65 +36,96 @@
 //! Three patterns for firing transitions:
 //!
 //! ```
-//! # use petrivet::builder::NetBuilder;
-//! # use petrivet::net::system::PetriNet;
+//! # use petrivet::net::builder::NetBuilder;
+//! # use petrivet::system::PetriNet;
 //! # let mut b = NetBuilder::new();
 //! # let [p0, p1] = b.add_places();
 //! # let [t0, t1] = b.add_transitions();
 //! # b.add_arc((p0, t0)); b.add_arc((t0, p1));
 //! # b.add_arc((p1, t1)); b.add_arc((t1, p0));
 //! # let net = b.build().unwrap();
-//! # let mut sys = PetriNet::new(net, [1, 0]);
+//! # let mut sys = PetriNet::new(net, [(p0, 1)]);
 //! // 1. I know which transition - just try it
 //! sys.try_fire(t0).unwrap();
 //!
 //! // 2. I need to choose from the enabled set - zero redundant checks
-//! sys.choose_and_fire(|enabled| enabled.first());
+//! let choice = sys.enabled_transitions().next();
+//! if let Some(t) = choice {
+//!     sys.fire_unchecked(t);
+//! }
 //!
 //! // 3. Fire anything, I don't care which
 //! sys.fire_any();
 //! ```
 
 pub mod boundedness;
-pub mod coverability;
-pub mod reachability;
+pub mod siphon_trap;
 pub mod deadlock_freedom;
 pub mod liveness;
-pub mod chc;
+pub mod reachability;
+pub mod marking;
+pub mod parikh_vector;
 
-use crate::core::marking::IdxMarking;
-use crate::core::state_space::ExplorationOrder;
-use crate::prelude::{Marking, Net, Place, Transition};
-use crate::state_space::{CoverabilityExplorer, CoverabilityGraph};
-use crate::state_space::{ReachabilityExplorer, ReachabilityGraph};
+use crate::core::state_space::DenseStateGraphExplorer;
+use crate::core::system::boundedness::BoundsCache;
+use crate::core::system::deadlock_freedom::DeadlockCache;
+use crate::core::system::liveness::LivenessCache;
+use crate::core::system::marking::IdxMarking;
+use crate::net::{Net, Place, Transition};
+use crate::state_space::{CoverabilityExplorer, ExplorationOrder, ReachabilityGraphExplorer, StateGraphExplorer};
+use crate::system::marking::Marking;
+use std::cell::RefCell;
 use std::fmt;
 use std::ops::Deref;
 
 /// A Petri net system `(N, M₀)` consists of a [`Net`] `N` and an initial [`Marking`] `M₀`.
 ///
-/// ```no_run
-/// use petrivet::prelude::PetriNet;
-/// let pn = PetriNet::new(&net, [(p0, 1), (p2, 5)]);
+/// ```
+/// use petrivet::system::PetriNet;
+/// # use petrivet::net::builder::NetBuilder;
+/// # let mut b = NetBuilder::new();
+/// # let [p0, p1] = b.add_places();
+/// # let [t0] = b.add_transitions();
+/// # b.add_arcs((p0, t0, p1));
+/// # let net = b.build().unwrap();
+/// let pn = PetriNet::new(&net, [(p0, 1), (p1, 5)]);
 /// ```
 ///
 /// You may simulate the behavior of the system, mutating its marking,
 /// by firing [`Transitions`](Transition).
 ///
-/// ```no_run
-/// pn.try_fire(t0).ok_or(|| "not enabled!")?;
+/// ```
+/// # use petrivet::net::builder::NetBuilder;
+/// # use petrivet::system::PetriNet;
+/// # let mut b = NetBuilder::new();
+/// # let [p0, p1] = b.add_places();
+/// # let [t0, t1] = b.add_transitions();
+/// # b.add_arc((p0, t0)); b.add_arc((t0, p1));
+/// # b.add_arc((p1, t1)); b.add_arc((t1, p0));
+/// # let net = b.build().unwrap();
+/// # let mut pn = PetriNet::new(&net, [(p0, 1)]);
+/// pn.try_fire(t0).expect("t0 is not enabled!");
 /// ```
 ///
 /// If you want to fire any enabled transition without caring which one,
 /// use [`fire_any()`](Self::fire_any).
 ///
-/// ```no_run
-/// pn.fire_any().ok_or("deadlock!")?;
+/// ```
+/// # use petrivet::net::builder::NetBuilder;
+/// # use petrivet::system::PetriNet;
+/// # let mut b = NetBuilder::new();
+/// # let [p0, p1] = b.add_places();
+/// # let [t0, t1] = b.add_transitions();
+/// # b.add_arcs((p0, t0, p1, t1, p0));
+/// # let net = b.build().unwrap();
+/// # let mut pn = PetriNet::new(&net, [(p0, 1)]);
+/// pn.fire_any().expect("t0 is enabled");
 /// ```
 ///
 /// To reset the system back to the marking it was initialized with,
 /// use [`reset()`](Self::reset).
 #[derive(Debug, Clone)]
-pub struct PetriNet<N = Net> {
+pub struct PetriNet<N: AsRef<Net> = Net> {
     /// The [`Net`] structure, which is immutable and can be shared across multiple
     /// Petri nets depending on the choice of `N` (e.g. `&Net`, `Arc<Net>`, ...).
     pub net: N,
@@ -101,14 +133,24 @@ pub struct PetriNet<N = Net> {
     ///
     /// The current state of this marking is used as the starting point, or "initial marking",
     /// for all analysis procedures.
-    // todo: make private
-    pub(crate) marking: IdxMarking<u32>,
+    marking: IdxMarking<u32>,
     /// The marking which the Petri net was initialized with. This will never change.
     ///
     /// This is purposefully not called the *initial* marking because the other marking
     /// field serves as the de-facto initial marking for analysis questions, even if it
     /// was previously mutated through simulation.
     reset_marking: IdxMarking<u32>,
+    /// Cache of analysis results for the current marking.
+    /// This is cleared whenever the marking changes.
+    cache: PropertyCache,
+}
+
+/// Incremental caches of analysis results for the current marking.
+#[derive(Debug, Clone, Default)]
+struct PropertyCache {
+    boundedness: RefCell<Option<BoundsCache>>,
+    liveness: RefCell<Option<LivenessCache>>,
+    deadlocks: RefCell<Option<DeadlockCache>>,
 }
 
 impl<N: AsRef<Net>> Deref for PetriNet<N> {
@@ -123,25 +165,36 @@ impl<N: AsRef<Net>> PetriNet<N> {
     /// Creates a new Petri net from a net and initial marking.
     #[must_use]
     pub fn new(net: N, initial_marking: impl Into<Marking<u32>>) -> Self {
-        let initial_marking = net.as_ref().mapping.decode(initial_marking.into());
+        let initial_marking = net.as_ref().mapping.idx_marking(initial_marking.into());
         let reset_marking = initial_marking.clone();
-        Self { net, marking: initial_marking, reset_marking }
+        let cache = PropertyCache::default();
+        Self {
+            net,
+            marking: initial_marking,
+            reset_marking,
+            cache,
+        }
     }
 
-    /// Consumes the system and returns (`net`, `initial_marking`, `current_marking`).
+    /// Consumes the system and returns (`net`, `current_marking`, `original_marking`).
     #[must_use]
     pub fn into_parts(self) -> (N, Marking<u32>, Marking<u32>) {
-        let PetriNet { net, marking, reset_marking: reset } = self;
-        let marking = net.as_ref().mapping.encode(marking);
-        let reset = net.as_ref().mapping.encode(reset);
-        (net, marking, reset)
+        let PetriNet {
+            net,
+            marking,
+            reset_marking,
+            cache: _,
+        } = self;
+        let marking = net.as_ref().mapping.marking(marking);
+        let reset_marking = net.as_ref().mapping.marking(reset_marking);
+        (net, marking, reset_marking)
     }
 
     /// Returns the current marking of the system.
     #[must_use]
     pub fn marking(&self) -> Marking<u32> {
         let current_marking = self.marking.clone();
-        self.mapping.encode(current_marking)
+        self.mapping.marking(current_marking)
     }
 
     /// Returns the token count at a place identified by its [`Place`].
@@ -156,11 +209,9 @@ impl<N: AsRef<Net>> PetriNet<N> {
     /// Resets the current marking to the initial marking.
     /// Returns the marking before the reset.
     pub fn reset(&mut self) -> Marking<u32> {
-        let previous = std::mem::replace(
-            &mut self.marking,
-            self.reset_marking.clone()
-        );
-        self.mapping.encode(previous)
+        let previous = std::mem::replace(&mut self.marking, self.reset_marking.clone());
+        self.cache = PropertyCache::default();
+        self.mapping.marking(previous)
     }
 
     /// Whether a transition is enabled under the current marking.
@@ -177,8 +228,8 @@ impl<N: AsRef<Net>> PetriNet<N> {
     /// Returns the set of currently enabled transitions.
     ///
     /// This is a read-only query. To fire one of these, use [`try_fire`](Self::try_fire)
-    /// or [`choose_and_fire`](Self::choose_and_fire).
-    pub fn enabled_transitions(&self) -> impl Iterator<Item = Transition> + '_ {
+    /// or [`fire_unchecked`](Self::fire_unchecked).
+    pub fn enabled_transitions(&self) -> impl Iterator<Item=Transition> + '_ {
         self.dense_net
             .transition_indices()
             .filter(|&t_idx| self.dense_net.is_enabled_in(t_idx, &self.marking))
@@ -233,13 +284,44 @@ impl<N: AsRef<Net>> PetriNet<N> {
     /// or if any token count would overflow `u32::MAX`.
     pub fn fire_unchecked(&mut self, t: Transition) {
         if let Some(t_idx) = self.mapping.transition_idx(t) {
-            for &p_idx in &self.net.as_ref().dense_net.preset_t[t_idx] {
-                self.marking[p_idx].checked_sub(1).expect("fire_unchecked: token underflow");
-            }
-            for &p_idx in &self.net.as_ref().dense_net.postset_t[t_idx] {
-                self.marking[p_idx].checked_add(1).expect("fire_unchecked: token overflow");
-            }
+            self.net.as_ref().dense_net.fire(t_idx, &mut self.marking);
+            self.cache = PropertyCache::default();
         }
+    }
+
+    /// Returns a [`ReachabilityGraphExplorer`] for this system
+    /// initialized with the given [`ExplorationOrder`].
+    pub fn explore_reachability_graph(&self, order: ExplorationOrder) -> ReachabilityGraphExplorer<'_> {
+        StateGraphExplorer {
+            core: DenseStateGraphExplorer::new(&self.dense_net, self.marking.clone(), order),
+            mapping: &self.mapping,
+        }
+    }
+
+    /// Returns a [`CoverabilityExplorer`] for this system
+    /// initialized with the given [`ExplorationOrder`].
+    pub fn explore_coverability_graph(&self, order: ExplorationOrder) -> CoverabilityExplorer<'_> {
+        StateGraphExplorer {
+            core: DenseStateGraphExplorer::new(&self.dense_net, self.marking.clone().into(), order),
+            mapping: &self.mapping,
+        }
+    }
+
+    /// Provides access to the bounds cache, creating it if necessary.
+    pub(crate) fn with_boundedness_cache<R>(&self, f: impl FnOnce(&mut BoundsCache) -> R) -> R {
+        let mut slot = self.cache.boundedness.borrow_mut();
+        f(slot.get_or_insert_with(|| BoundsCache::new(&self.marking)))
+    }
+
+    /// Provides access to the liveness cache, creating it if necessary.
+    pub(crate) fn with_liveness_cache<R>(&self, f: impl FnOnce(&mut LivenessCache) -> R) -> R {
+        let mut slot = self.cache.liveness.borrow_mut();
+        f(slot.get_or_insert_with(|| LivenessCache::new(self.transition_count())))
+    }
+
+    pub(crate) fn with_deadlock_cache<R>(&self, f: impl FnOnce(&mut DeadlockCache) -> R) -> R {
+        let mut slot = self.cache.deadlocks.borrow_mut();
+        f(slot.get_or_insert_with(|| DeadlockCache::new()))
     }
 }
 
@@ -257,67 +339,12 @@ impl fmt::Display for NotEnabled {
 
 impl std::error::Error for NotEnabled {}
 
-// state space convenience methods
-impl<N: AsRef<Net>> PetriNet<N> {
-    /// Returns a [`CoverabilityExplorer`] for this system
-    /// initialized with the given [`ExplorationOrder`].
-    pub fn explore_coverability(&self, order: ExplorationOrder) -> CoverabilityExplorer<'_> {
-        CoverabilityExplorer::new(self, order)
-    }
-
-    /// Returns the complete coverability graph for this system.
-    ///
-    /// Warning! This may be a HUGE structure!
-    pub fn build_coverability_graph(&self) -> CoverabilityGraph<'_> {
-        self.explore_coverability(ExplorationOrder::BreadthFirst).build_graph()
-    }
-
-    /// Attempt to construct a [`ReachabilityGraph`] of this [`PetriNet`],
-    /// returning either itself if the system is bounded or a partially-explored
-    /// [`CoverabilityExplorer`] if it is unbounded.
-    ///
-    /// Not knowing whether we will encounter unboundedness, this method first
-    /// constructs a Karp-Miller coverability tree which introduces ω as soon
-    /// as unbounded growth is detected. This comes at the cost of an additional
-    /// check per explored marking (omega acceleration). If we finish exploring
-    /// the coverability tree without ever introducing ω, we have in fact explored
-    /// the full reachability graph and can return it directly. Otherwise, we return
-    /// the [`CoverabilityExplorer`] in its current state, which contains the explored
-    /// portion of the coverability graph up to the first ω, and can be further explored.
-    ///
-    /// This is the right entry point when you want the speed of exploring
-    /// the reachability graph directly but cannot rule out unboundedness
-    /// upfront. For unbounded nets you avoid the cost of completing the
-    /// full coverability graph; for bounded nets the cost is identical to
-    /// `build_reachability_graph` (no ω is ever introduced, no extra work).
-    ///
-    /// # Errors
-    /// Returns `Err(partial_explorer)` as soon as any explored marking
-    /// contains ω. The frontier is preserved, so callers may resume.
-    #[allow(clippy::result_large_err)]
-    pub fn try_build_reachability_graph(&self) -> Result<ReachabilityGraph<'_>, CoverabilityExplorer<'_>> {
-        self.explore_coverability(ExplorationOrder::BreadthFirst).try_build_reachability_graph()
-    }
-
-    /// Returns a [`ReachabilityExplorer`] for this system
-    /// initialized with the given [`ExplorationOrder`].
-    pub fn explore_reachability(&self, order: ExplorationOrder) -> ReachabilityExplorer<'_> {
-        ReachabilityExplorer::new(self, order)
-    }
-
-    /// Returns the complete reachability graph for this system.
-    ///
-    /// WARNING! For unbounded nets, this will not terminate!
-    pub fn build_reachability_graph(&self) -> ReachabilityGraph<'_> {
-        self.explore_reachability(ExplorationOrder::BreadthFirst).build_graph()
-    }
-}
-
 #[cfg(feature = "pnml")]
 mod pnml {
-    use crate::pnml::convert::PnmlConversionError;
+    use crate::net::Net;
     use crate::pnml::PnmlDocument;
-    use crate::prelude::{Net, PetriNet};
+    use crate::pnml::import::PnmlConversionError;
+    use crate::system::PetriNet;
     use std::error::Error;
     use std::fmt;
     use std::fmt::{Display, Formatter};
@@ -350,7 +377,8 @@ mod pnml {
         /// Returns an error if the XML failed to parse, if there were no nets in the file,
         /// or if the first petri net in the file is not a PT net, as specified by `net_type`.
         pub fn from_pnml(pnml: &str) -> Result<Self, FromPnmlError> {
-            PnmlDocument::from_xml(pnml).map_err(FromPnmlError::Syntax)
+            PnmlDocument::from_xml(pnml)
+                .map_err(FromPnmlError::Syntax)
                 .and_then(|doc| doc.nets.into_iter().next().ok_or(FromPnmlError::Empty))
                 .and_then(|net| net.to_pt_system().map_err(FromPnmlError::Conversion))
         }
@@ -373,8 +401,10 @@ mod pnml {
 }
 
 #[cfg(test)]
-mod tests {
-    use crate::prelude::{Marking, Net, NetBuilder, Place, Transition};
+pub(crate) mod tests {
+    use crate::net::builder::NetBuilder;
+    use crate::net::{Net, Place, Transition};
+    use crate::system::marking::Marking;
 
     /// Builds a simple two-place cycle: p0 -> t0 -> p1 -> t1 -> p0
     pub fn two_place_cycle() -> (Net, Place, Transition, Place, Transition) {

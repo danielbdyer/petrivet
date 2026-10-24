@@ -10,11 +10,22 @@
 //!
 //! This module provides a bidirectional mapping between the public handles and the internal dense indices.
 
-use crate::core::marking::IdxMarking;
+use crate::core::cegar::CegarResult;
+use crate::core::cegar::lemma::IdxLemma;
+use crate::core::cegar::observe::IdxCegarEvent as IdxCegarEvent;
+use crate::core::net::idx_set::{PlaceIdxSet, TransitionIdxSet};
 use crate::core::net::{PlaceIdx, TransitionIdx};
 use crate::core::state_space::TokenOps;
-use crate::prelude::{Marking, Place, Transition};
-use ahash::HashMap;
+use crate::core::system::marking::IdxMarking;
+use crate::core::system::parikh_vector::IdxParikhVector;
+use crate::net::p_invariant::PInvariant;
+use crate::net::{Place, Transition};
+use crate::system::marking::Marking;
+use crate::system::parikh_vector::ParikhVector;
+use crate::system::reachability::Lemma;
+use crate::system::reachability::SpuriousSolutionEliminatedEvent;
+use crate::system::reachability::{CoverabilityResult, ReachabilityResult};
+use ahash::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DenseMapping {
@@ -66,14 +77,15 @@ impl DenseMapping {
     /// Returns an iterator over all [`Places`](Place) in the net in their dense index order.
     ///
     /// This is useful for zipping places together with internal dense place data.
-    pub fn places(&self) -> impl Iterator<Item = Place> + '_ {
+    pub fn places(&self) -> impl Iterator<Item=Place> + '_ {
         self.ordered_places.iter().copied()
     }
 
     /// Returns the number of places in the net.
     #[must_use]
     pub fn place_count(&self) -> u32 {
-        u32::try_from(self.ordered_places.len()).expect("cannot be built with more than u32::MAX places")
+        u32::try_from(self.ordered_places.len())
+            .expect("cannot be built with more than u32::MAX places")
     }
 
     /// Returns the dense index for `transition` if it exists in this net, or `None` if it does not.
@@ -91,28 +103,26 @@ impl DenseMapping {
     /// Returns an iterator over all [`Transitions`](Transition) in the net in their dense index order.
     ///
     /// This is useful for zipping transitions together with internal dense transition data.
-    pub fn transitions(&self) -> impl Iterator<Item = Transition> + '_ {
+    pub fn transitions(&self) -> impl Iterator<Item=Transition> + '_ {
         self.ordered_transitions.iter().copied()
     }
 
     /// Returns the number of transitions in the net.
     #[must_use]
     pub fn transition_count(&self) -> u32 {
-        u32::try_from(self.ordered_transitions.len()).expect("cannot be built with more than u32::MAX transitions")
+        u32::try_from(self.ordered_transitions.len())
+            .expect("cannot be built with more than u32::MAX transitions")
     }
 
     /// Convert an internal index marking to a public marking.
-    pub fn encode<T: TokenOps>(&self, idx_marking: IdxMarking<T>) -> Marking<T> {
+    pub fn marking<T: TokenOps>(&self, idx_marking: IdxMarking<T>) -> Marking<T> {
         self.places().zip(idx_marking).collect()
     }
 
     /// Convert a public marking to an internal index marking.
     ///
-    /// If the provided marking contains places that do not exist in this net, those places will be ignored.
-    /// 
-    /// todo: accept any IntoIterator<Item=(Place, T)> instead of a Marking<T> to avoid unnecessary
-    ///  intermediate allocations when the caller already has an iterator over the marking's support.
-    pub fn decode<T: TokenOps>(&self, marking: Marking<T>) -> IdxMarking<T> {
+    /// Referenced places which do not exist in the net will be ignored.
+    pub fn idx_marking<T: TokenOps>(&self, marking: Marking<T>) -> IdxMarking<T> {
         let mut idx_marking = IdxMarking::zeros(self.place_count());
         marking.into_iter().for_each(|(place, count)| {
             if let Some(dense) = self.place_idx(place) {
@@ -120,6 +130,137 @@ impl DenseMapping {
             }
         });
         idx_marking
+    }
+
+    /// Convert a slice of public places to a set of internal indices.
+    pub fn place_idx_set(&self, places: &[Place]) -> PlaceIdxSet {
+        let mut idx_set = PlaceIdxSet::none_of(self.place_count() as usize);
+        for &place in places {
+            if let Some(p_idx) = self.place_idx(place) {
+                idx_set.add(p_idx);
+            }
+        }
+        idx_set
+    }
+
+    /// Convert a set of internal indices to a `HashSet<Place>`.
+    pub fn place_set(&self, places: &PlaceIdxSet) -> HashSet<Place> {
+        places.iter().map(|p_idx| self.place(p_idx)).collect()
+    }
+
+    /// Convert a slice of public transitions to a set of internal indices.
+    #[expect(unused)]
+    pub fn transition_idx_set(&self, transitions: &[Transition]) -> TransitionIdxSet {
+        let mut idx_set = TransitionIdxSet::none_of(self.transition_count() as usize);
+        for &transition in transitions {
+            if let Some(t_idx) = self.transition_idx(transition) {
+                idx_set.add(t_idx);
+            }
+        }
+        idx_set
+    }
+
+    /// Convert a set of internal indices to a `HashSet<Transition>`.
+    pub fn transition_set(&self, transition_indices: &TransitionIdxSet) -> HashSet<Transition> {
+        transition_indices.iter().map(|t_idx| self.transition(t_idx)).collect()
+    }
+
+    /// Convert a sequence of internal transition indices to a `Vec<Transition>`.
+    pub fn firing_sequence(&self, transitions: Vec<TransitionIdx>) -> Vec<Transition> {
+        transitions.into_iter().map(|t_idx| self.transition(t_idx)).collect()
+    }
+
+    /// Convert an internal Parikh vector to a public one.
+    pub fn parikh_vector(&self, parikh_vector: IdxParikhVector<u32>) -> ParikhVector<u32> {
+        parikh_vector
+            .into_inner()
+            .into_iter()
+            .enumerate()
+            .map(|(t_idx, count)| (self.transition(t_idx), count))
+            .collect()
+    }
+
+    /// Translates an internal dense-indexed [`IdxCegarEvent`](IdxCegarEvent) to its public equivalent.
+    pub fn cegar_event(&self, event: IdxCegarEvent) -> SpuriousSolutionEliminatedEvent {
+        SpuriousSolutionEliminatedEvent {
+            spurious_marking: event.spurious_marking.map(|m| self.marking(m)),
+            spurious_parikh_vector: event.spurious_parikh_vector.map(|pv| self.parikh_vector(pv)),
+            lemma: self.lemma(event.lemma),
+        }
+    }
+
+    /// Translates an internal [`CegarResult`](CegarResult) to a public Reachability result.
+    pub fn reachability_result(&self, result: CegarResult) -> ReachabilityResult {
+        match result {
+            CegarResult::Satisfiable { marking: _, firing_sequence } => ReachabilityResult::Reachable {
+                // the target marking is already known to the caller (they provided it), so we don't need to return it here
+                firing_sequence: self.firing_sequence(firing_sequence),
+            },
+            CegarResult::Unsatisfiable { contradiction } => ReachabilityResult::Unreachable {
+                contradiction: contradiction.into_iter().map(|lemma| self.lemma(lemma)).collect(),
+            },
+            CegarResult::Inconclusive => ReachabilityResult::Inconclusive,
+        }
+    }
+
+    /// Translates an internal [`CegarResult`](CegarResult) to a public Coverability result.
+    pub fn coverability_result(&self, result: CegarResult) -> CoverabilityResult {
+        match result {
+            CegarResult::Satisfiable { marking, firing_sequence } => CoverabilityResult::Coverable {
+                marking: self.marking(marking),
+                firing_sequence: self.firing_sequence(firing_sequence),
+            },
+            CegarResult::Unsatisfiable { contradiction } => CoverabilityResult::Uncoverable {
+                contradiction: contradiction.into_iter().map(|lemma| self.lemma(lemma)).collect(),
+            },
+            CegarResult::Inconclusive => CoverabilityResult::Inconclusive,
+        }
+    }
+
+    /// Convert an internal lemma to a public lemma.
+    pub fn lemma(&self, lemma: IdxLemma) -> Lemma {
+        match lemma {
+            IdxLemma::PInvariant(p_inv) => Lemma::PInvariant(PInvariant {
+                weights: p_inv.weights.into_iter()
+                    .map(|(p_idx, w)| (self.place(p_idx), w))
+                    .collect(),
+                value: p_inv.value,
+                kind: p_inv.kind,
+            }),
+            IdxLemma::InitiallyMarkedTrap(trap) => Lemma::InitiallyMarkedTrap(
+                self.place_set(&trap)
+            ),
+            IdxLemma::InitiallyUnmarkedSiphon(siphon) => Lemma::InitiallyUnmarkedSiphon(
+                self.place_set(&siphon)
+            ),
+            IdxLemma::MarkingEquation {
+                place, initial_marking, net_effects,
+            } => Lemma::MarkingEquation {
+                place: self.place(place),
+                initial_marking,
+                net_effects: net_effects.into_iter()
+                    .map(|(t_idx, effect)| (self.transition(t_idx), effect))
+                    .collect(),
+            },
+            IdxLemma::TrapBecomesMarked { feeder, trap } => Lemma::TrapBecomesMarked {
+                feeder: self.transition(feeder),
+                trap: self.place_set(&trap),
+            },
+            IdxLemma::TransitionOrdering { t_idx, p_idx, feeders } => Lemma::TransitionOrdering {
+                transition: self.transition(t_idx),
+                place: self.place(p_idx),
+                feeders: feeders.into_iter().map(|t_idx| self.transition(t_idx)).collect(),
+            },
+            IdxLemma::Increment {
+                component_places,
+                component_transitions,
+                firing_sequence,
+            } => Lemma::Increment {
+                component_places: self.place_set(&component_places),
+                component_transitions: self.transition_set(&component_transitions),
+                firing_sequence: self.firing_sequence(firing_sequence),
+            },
+        }
     }
 }
 

@@ -34,30 +34,18 @@
 //!
 //! Run: `cargo run --example workflow_analysis`
 
-use petrivet::prelude::{NetBuilder, PetriNet};
+use petrivet::net::Net;
 use petrivet::state_space::ExplorationOrder;
+use petrivet::system::PetriNet;
 
 fn main() {
     println!("=== PCB Assembly Line Analysis ===\n");
 
-    let mut b = NetBuilder::new();
+    let mut b = Net::builder();
 
-    let [
-        raw,
-        station,
-        soldered,
-        passed,
-        failed,
-        done,
-    ] = b.add_places();
+    let [raw, station, soldered, passed, failed, done] = b.add_places();
 
-    let transitions @ [
-        solder,
-        inspect_pass,
-        inspect_fail,
-        ship,
-        rework,
-    ] = b.add_transitions();
+    let transitions @ [solder, inspect_pass, inspect_fail, ship, rework] = b.add_transitions();
 
     // Solder: raw + station → soldered + station
     b.add_arcs((raw, solder, soldered));
@@ -75,7 +63,11 @@ fn main() {
 
     let net = b.build().expect("valid net");
 
-    println!("Net: {} places, {} transitions", net.place_count(), net.transition_count());
+    println!(
+        "Net: {} places, {} transitions",
+        net.place_count(),
+        net.transition_count()
+    );
     println!("Structural class: {}", net.class());
 
     println!("\n--- Structural Analysis ---\n");
@@ -89,56 +81,73 @@ fn main() {
 
     // 3 raw boards, 1 station slot, everything else empty
     let sys = PetriNet::new(&net, [(raw, 3), (station, 1)]);
-    let boundedness = sys.boundedness();
-    let liveness = sys.liveness();
+    let boundedness = sys.boundedness().call().unwrap();
+    let liveness = sys.liveness().call().unwrap();
 
     println!("Bounded: {:?}", boundedness.is_bounded());
-    println!("Live (every transition always eventually firable): {}", liveness.global_level().is_live());
+    println!(
+        "Live (every transition always eventually firable): {}",
+        liveness.is_live()
+    );
 
-    for t in &transitions {
-        println!("Transition {:?} liveness: {}", t, liveness.level(*t));
+    for &t in &transitions {
+        println!("Transition {:?} liveness: {}", t, sys.liveness().of(t).call().unwrap());
     }
 
     println!("\n--- Reachability Analysis ---\n");
 
     // Can all 3 boards reach "done"?
-    let result = sys.analyze_reachability(&[(station, 1), (done, 3)].into());
+    let result = sys.analyze_reachability([(station, 1), (done, 3)], None);
     println!(
         "All 3 boards done? {}",
-        if result.is_reachable() { "reachable" }
-        else if result.is_unreachable() { "definitely unreachable" }
-        else { "inconclusive" }
+        if result.is_reachable() {
+            "reachable"
+        } else if result.is_unreachable() {
+            "definitely unreachable"
+        } else {
+            "inconclusive"
+        }
     );
 
     // Can we magically get 4 boards done from 3?
-    let impossible = [(station, 1), (done, 4)].into();
-    let result2 = sys.analyze_reachability(&impossible);
+    let impossible = [(station, 1), (done, 4)];
+    let result2 = sys.analyze_reachability(impossible, None);
     println!(
         "4 boards done from 3? {}",
-        if result2.is_reachable() { "reachable" }
-        else if result2.is_unreachable() { "definitely unreachable" }
-        else { "inconclusive" }
+        if result2.is_reachable() {
+            "reachable"
+        } else if result2.is_unreachable() {
+            "definitely unreachable"
+        } else {
+            "inconclusive"
+        }
     );
 
     println!("\n--- Coverability Graph ---\n");
 
     let cg = sys.build_coverability_graph();
-    println!("Markings: {}, Edges: {}", cg.marking_count(), cg.transition_count());
+    println!(
+        "Markings: {}, Edges: {}",
+        cg.marking_count(),
+        cg.transition_count()
+    );
     println!("Bounded: {}", cg.is_bounded());
 
     let threshold = [(station, 1.into()), (done, 3.into())].into();
     println!(
         "All-done marking coverable: {}",
-        cg.cover(threshold).map_or_else(
-            || "no".to_string(),
-            |cover| format!("yes: {cover:?}")
-        )
+        cg.cover(threshold)
+            .map_or_else(|| "no".to_string(), |cover| format!("yes: {cover:?}"))
     );
 
     println!("\n--- Reachability Graph ---\n");
 
     let rg = sys.build_reachability_graph();
-    println!("States: {}, Edges: {}", rg.marking_count(), rg.transition_count());
+    println!(
+        "States: {}, Edges: {}",
+        rg.marking_count(),
+        rg.transition_count()
+    );
     println!("Deadlock-free: {}", rg.is_deadlock_free());
 
     if !rg.is_deadlock_free() {
@@ -148,11 +157,14 @@ fn main() {
         }
     }
 
-    println!("\nLiveness (from RG): {}", rg.transition_liveness().is_live());
+    println!(
+        "\nLiveness (from RG): {}",
+        rg.transition_liveness().is_live()
+    );
 
     println!("\n--- Incremental Exploration ---\n");
 
-    let mut explorer = sys.explore_reachability(ExplorationOrder::BreadthFirst);
+    let mut explorer = sys.explore_reachability_graph(ExplorationOrder::BreadthFirst);
     println!("Starting incremental exploration...");
 
     let mut new_states = 0;
@@ -176,5 +188,8 @@ fn main() {
         rg.transition_count()
     );
 
-    println!("Promoted to ReachabilityGraph: live: {}", rg.transition_liveness().is_live());
+    println!(
+        "Promoted to ReachabilityGraph: live: {}",
+        rg.transition_liveness().is_live()
+    );
 }

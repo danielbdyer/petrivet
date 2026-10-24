@@ -9,7 +9,7 @@
 //! # Usage
 //!
 //! ```rust
-//! use petrivet::builder::NetBuilder;
+//! use petrivet::net::builder::NetBuilder;
 //! use petrivet::pnml::labels::NetLabels;
 //!
 //! let mut b = NetBuilder::new();
@@ -30,8 +30,8 @@
 //! assert_eq!(labels.transition_name(finish), Some("Finish"));
 //! ```
 
-use crate::pnml::nupn::NupnMetadata;
 use crate::net::{Arc, Place, Transition};
+use crate::pnml::nupn::NupnMetadata;
 use ahash::{HashMap, HashMapExt};
 
 /// Human-readable labels and metadata for the elements of a single Petri net.
@@ -39,7 +39,7 @@ use ahash::{HashMap, HashMapExt};
 /// Labels are purely presentational: they have no effect on structural
 /// classification, reachability analysis, or simulation. The struct is
 /// intentionally decoupled from [`Net`](Net) and
-/// [`System`](crate::system::PetriNet) — callers hold the three values
+/// [`System`](crate::system::PetriNet) - callers hold the three values
 /// independently and compose them as needed.
 ///
 /// It is undefined behavior to access labels for a place/transition/arc
@@ -226,18 +226,14 @@ impl NetLabels {
     }
 
     /// Iterates over `(Place, name)` pairs for all places that have a name set.
-    pub fn named_places(&self) -> impl Iterator<Item = (Place, &str)> {
-        self.place_names
-            .iter()
-            .map(|(k, v)| (*k, v.as_str()))
+    pub fn named_places(&self) -> impl Iterator<Item=(Place, &str)> {
+        self.place_names.iter().map(|(k, v)| (*k, v.as_str()))
     }
 
     /// Iterates over `(Transition, name)` pairs for all transitions that have a
     /// name set (crate-internal).
-    pub fn named_transitions(&self) -> impl Iterator<Item = (Transition, &str)> {
-        self.transition_names
-            .iter()
-            .map(|(k, v)| (*k, v.as_str()))
+    pub fn named_transitions(&self) -> impl Iterator<Item=(Transition, &str)> {
+        self.transition_names.iter().map(|(k, v)| (*k, v.as_str()))
     }
 }
 
@@ -273,7 +269,8 @@ impl NetLabels {
 
 #[cfg(test)]
 mod tests {
-    use crate::prelude::{Arc, NetBuilder};
+    use crate::net::Arc;
+    use crate::net::builder::NetBuilder;
     use crate::pnml::labels::NetLabels;
 
     #[test]
@@ -359,7 +356,9 @@ mod tests {
     #[test]
     fn net_level_labels() {
         let mut l = NetLabels::new();
-        l.set_net_name("Ring").set_net_id("n0").set_net_description("A token ring.");
+        l.set_net_name("Ring")
+            .set_net_id("n0")
+            .set_net_description("A token ring.");
         assert_eq!(l.net_name(), Some("Ring"));
         assert_eq!(l.net_id(), Some("n0"));
         assert_eq!(l.net_description(), Some("A token ring."));

@@ -4,16 +4,16 @@
 //! from a given initial marking in a Petri net, and analyzing the resulting
 //! reachability graph for properties like liveness and deadlock-freedom.
 
-use crate::boundedness::{Boundedness, K};
 use crate::net::Place;
 use crate::state_space::{StateGraph, StateGraphExplorer};
-use crate::system::liveness::LivenessAnalysis;
+use crate::system::boundedness::{Boundedness, K};
+use crate::system::liveness::{LivenessAnalysis, LivenessProvenance};
 use ahash::HashMap;
 
 /// An incremental exploration handle which lazily enumerates every single marking
 /// in the state space of the [`PetriNet`].
 ///
-/// Note that an [`unbounded`](crate::literature#Boundedness)
+/// Note that an [`unbounded`]
 ///
 /// Works for any net (bounded or unbounded). For unbounded nets, the frontier
 /// never empties - the caller must impose their own termination condition.
@@ -24,28 +24,28 @@ use ahash::HashMap;
 /// # Examples
 ///
 /// ```
-/// use petrivet::{NetBuilder, PetriNet};
+/// use petrivet::net::builder::NetBuilder;
+/// use petrivet::system::PetriNet;
 /// use petrivet::state_space::ExplorationOrder;
-/// use petrivet::state_space::reachability::{ReachabilityExplorer, ReachabilityGraph};
+/// use petrivet::state_space::{ReachabilityGraphExplorer, ReachabilityGraph};
 ///
 /// let mut b = NetBuilder::new();
 /// let [p0, p1] = b.add_places();
 /// let [t0] = b.add_transitions();
-/// b.add_arcs((p0, t0));
-/// b.add_arc((t0, p0));
+/// b.add_arcs((p0, t0, p0));
 /// b.add_arc((t0, p1));
 /// let net = b.build().unwrap();
-/// let sys = PetriNet::new(net, [1, 0]);
+/// let sys = PetriNet::new(net, [(p0, 1)]);
 ///
 /// // Explore an unbounded net incrementally, stopping after 50 states
-/// let mut explorer = sys.explore_reachability(ExplorationOrder::BreadthFirst);
-/// explorer.iter().take(50).for_each(|s| println!("{:#?}", s.marking));
-/// assert!(explorer.state_count() >= 50);
+/// let mut explorer = sys.explore_reachability_graph(ExplorationOrder::BreadthFirst);
+/// explorer.explore_iter().take(50).for_each(|s| println!("{:#?}", s.marking));
+/// assert!(explorer.marking_count() >= 50);
 /// assert!(!explorer.is_fully_explored()); // unbounded → never finishes
 /// ```
-pub type ReachabilityExplorer<'a> = StateGraphExplorer<'a, u32>;
+pub type ReachabilityGraphExplorer<'a> = StateGraphExplorer<'a, u32>;
 
-impl std::fmt::Debug for ReachabilityExplorer<'_> {
+impl std::fmt::Debug for ReachabilityGraphExplorer<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReachabilityExplorer")
             .field("markings", &self.marking_count())
@@ -73,11 +73,12 @@ impl ReachabilityGraph<'_> {
     /// Returns all transitions in the Petri net with their associated liveness levels.
     #[must_use]
     pub fn transition_liveness(&self) -> LivenessAnalysis {
-        let levels = self.mapping
+        let levels = self
+            .mapping
             .transitions()
             .zip(self.state_space.liveness_levels())
             .collect();
-        LivenessAnalysis { levels }
+        LivenessAnalysis::new(levels, LivenessProvenance::ReachabilityGraph)
     }
 
     /// Returns the maximum value of each place across all markings in the coverability graph.
@@ -85,18 +86,24 @@ impl ReachabilityGraph<'_> {
     #[must_use]
     pub fn place_bounds(&self) -> HashMap<Place, Boundedness> {
         let mut markings = self.state_space.markings();
-        let initial_marking = markings.next().expect("always at least one marking in the graph");
-        let bounds = markings.fold(
-            initial_marking.iter().copied().collect::<Vec<_>>(),
-            |mut bounds_so_far, next_marking| {
-                bounds_so_far.iter_mut()
-                    .zip(next_marking.iter())
-                    .for_each(|(bound, &next)| {
-                        *bound = core::cmp::max(*bound, next);
-                    });
-                bounds_so_far
-            },
-        ).into_iter().map(|max| Boundedness::Bounded(max as K));
+        let initial_marking = markings
+            .next()
+            .expect("always at least one marking in the graph");
+        let bounds = markings
+            .fold(
+                initial_marking.iter().copied().collect::<Vec<_>>(),
+                |mut bounds_so_far, next_marking| {
+                    bounds_so_far
+                        .iter_mut()
+                        .zip(next_marking.iter())
+                        .for_each(|(bound, &next)| {
+                            *bound = core::cmp::max(*bound, next);
+                        });
+                    bounds_so_far
+                },
+            )
+            .into_iter()
+            .map(|max| Boundedness::Bounded(max as K));
         self.mapping.places().zip(bounds).collect()
     }
 }

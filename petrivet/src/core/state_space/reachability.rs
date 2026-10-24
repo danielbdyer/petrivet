@@ -1,14 +1,20 @@
 use crate::core::net::TransitionIdx;
 use crate::core::state_space::{DenseStateGraph, DenseStateGraphExplorer, ExploreNext, TokenOps};
-use crate::liveness::LivenessLevel;
+use crate::system::liveness::LivenessLevel;
 use petgraph::graph::NodeIndex;
 
 impl TokenOps for u32 {
     const ZERO: Self = 0;
     const ONE: Self = 1;
-    fn at_least_one(&self) -> bool { *self >= 1 }
-    fn increment(&mut self) { *self += 1; }
-    fn decrement(&mut self) { *self -= 1; }
+    fn at_least_one(&self) -> bool {
+        *self >= 1
+    }
+    fn increment(&mut self) {
+        *self += 1;
+    }
+    fn decrement(&mut self) {
+        *self -= 1;
+    }
 }
 
 /// The core reachability graph exploration algorithm,
@@ -30,13 +36,13 @@ impl ExploreNext<u32> for DenseStateGraphExplorer<'_, u32> {
 impl DenseStateGraph<'_, u32> {
     /// Computes liveness levels for all transitions in a single pass.
     ///
-    /// SCC-based decision procedure for bounded nets ([Murata 1989 §V-C](crate::literature#v-c--liveness-via-reachability-graph-sccs)):
+    /// SCC-based decision procedure for bounded nets ([Murata 1989 §V-C]:
     /// - [`L0`](LivenessLevel::L0): `t` does not label any edge.
     /// - [`L1`](LivenessLevel::L1): `t` labels at least one edge.
     /// - [`L2`](LivenessLevel::L2): equivalent to L3 because this is a finite state space.
     /// - [`L3`](LivenessLevel::L3): `t` labels an edge within some non-trivial SCC.
     /// - [`L4`](LivenessLevel::L4): `t` labels an edge in **every** terminal SCC.
-    pub fn liveness_levels(&self) -> impl Iterator<Item = LivenessLevel> {
+    pub fn liveness_levels(&self) -> impl Iterator<Item=LivenessLevel> {
         use petgraph::visit::EdgeRef;
 
         let transition_count = self.net.transition_count();

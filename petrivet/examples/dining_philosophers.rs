@@ -18,7 +18,9 @@
 //!
 //! Run: `cargo run --example dining_philosophers`
 
-use petrivet::prelude::{Marking, NetBuilder, PetriNet};
+use petrivet::net::builder::NetBuilder;
+use petrivet::system::PetriNet;
+use petrivet::system::marking::Marking;
 
 const N: usize = 4;
 
@@ -61,10 +63,7 @@ fn main() {
     let net = net.build().expect("valid net");
     println!("Structural class: {}\n", net.class());
 
-    let initial: Marking<u32> = thinking.into_iter()
-        .chain(forks)
-        .map(|p| (p, 1))
-        .collect();
+    let initial: Marking<u32> = thinking.into_iter().chain(forks).map(|p| (p, 1)).collect();
 
     let mut sys = net.with_initial_marking(initial.clone());
 
@@ -86,7 +85,6 @@ fn main() {
     }
 
     println!("--- State Space Analysis ---\n");
-
 
     let sys = PetriNet::new(&net, initial.clone());
     let rg = sys.build_reachability_graph();

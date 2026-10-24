@@ -1,13 +1,18 @@
 //! The static topology of a Petri net.
 
+pub mod structural_boundedness;
 pub mod siphon_trap;
-pub mod boundedness;
+pub mod p_invariant;
+pub mod builder;
+pub mod class;
 
 use crate::core::mapping::DenseMapping;
-use crate::core::net::{DenseNet, IdxArc, IdxNode};
-use crate::prelude::{Marking, NetBuilder, NetClass, PetriNet};
+use crate::core::net::{DenseNet, IdxArc};
+use crate::system::PetriNet;
+use crate::system::marking::Marking;
+use builder::NetBuilder;
+use class::NetClass;
 use std::num::NonZeroU32;
-use petgraph::Graph;
 
 /// A *place* is one of the two types of nodes in a Petri net,
 /// often represented visually by a circle.
@@ -67,15 +72,12 @@ impl From<Transition> for Node {
 /// - `S` is a finite, nonempty set of [`Places`](Place),
 /// - `T` is a finite, nonempty set of [`Transitions`](Transition) disjoint from `S`,
 /// - `F` is a set containing elements from (S × T) ∪ (T × S), called the *flow relation*,
-///    which defines directed [`Arcs`](Arc) between places and transitions.
+///   which defines directed [`Arcs`](Arc) between places and transitions.
 #[derive(Debug, Clone)]
 pub struct Net {
     /// Inner net structure, optimized for efficient analysis algorithms.
     #[allow(clippy::struct_field_names)]
     pub(crate) dense_net: DenseNet,
-
-    /// The bipartite graph structure of the Petri net.
-    pub(crate) graph: Graph<IdxNode, ()>,
 
     /// Monotonic counter used when converting this [`Net`] back to a [`builder::NetBuilder`]
     /// so new nodes continue to receive unused ids. Ids are never reused for removed nodes.
@@ -84,7 +86,7 @@ pub struct Net {
     /// so new nodes continue to receive unused ids. Ids are never reused for removed nodes.
     pub(crate) next_transition_id: NonZeroU32,
     /// Bidirectional mapping between public handles and dense ranks for this snapshot.
-    pub(crate) mapping: DenseMapping,
+    pub(crate) mapping: std::sync::Arc<DenseMapping>,
 
     /// The annotations on the net.
     /// Boxed so that it only adds a single pointer's worth of overhead to the Net struct.
@@ -94,7 +96,7 @@ pub struct Net {
     /// The visual properties of the net.
     /// Boxed so that it only adds a single pointer's worth of overhead to the Net struct.
     #[cfg(feature = "pnml")]
-    pub graphics: Option<Box<crate::pnml::graphics::PnmlGraphics>>
+    pub graphics: Option<Box<crate::pnml::graphics::PnmlGraphics>>,
 }
 
 #[cfg(feature = "pnml")]
@@ -116,7 +118,10 @@ impl Net {
     }
 
     /// Creates a [`PetriNet`] by combining a reference to this net with the given marking.
-    pub fn with_initial_marking(&self, initial_marking: impl Into<Marking<u32>>) -> PetriNet<&Self> {
+    pub fn with_initial_marking(
+        &self,
+        initial_marking: impl Into<Marking<u32>>,
+    ) -> PetriNet<&Self> {
         PetriNet::new(self, initial_marking)
     }
 
@@ -133,12 +138,12 @@ impl Net {
     }
 
     /// Iterator over all places.
-    pub fn places(&self) -> impl Iterator<Item = Place> + '_ {
+    pub fn places(&self) -> impl Iterator<Item=Place> + '_ {
         self.mapping.places()
     }
 
     /// Iterator over all transitions.
-    pub fn transitions(&self) -> impl Iterator<Item = Transition> + '_ {
+    pub fn transitions(&self) -> impl Iterator<Item=Transition> + '_ {
         self.mapping.transitions()
     }
 
@@ -167,7 +172,7 @@ impl Net {
     }
 
     /// Iterator over all nodes (places then transitions) as [`Node`].
-    pub fn nodes(&self) -> impl Iterator<Item = Node> + '_ {
+    pub fn nodes(&self) -> impl Iterator<Item=Node> + '_ {
         Iterator::chain(
             self.places().map(Node::Place),
             self.transitions().map(Node::Transition),
@@ -180,15 +185,12 @@ impl Net {
     /// there is an arc from the transition to the place (`t → p`).
     ///
     /// If the provided place does not exist in the net, this method returns an empty iterator.
-    pub fn place_preset(&self, place: &Place) -> impl Iterator<Item = Transition> + '_ {
-        self.mapping
-            .place_idx(*place)
-            .into_iter()
-            .flat_map(|idx| {
-                self.dense_net.preset_p[idx]
-                    .iter()
-                    .map(|&t_idx| self.mapping.transition(t_idx))
-            })
+    pub fn place_preset(&self, place: &Place) -> impl Iterator<Item=Transition> + '_ {
+        self.mapping.place_idx(*place).into_iter().flat_map(|idx| {
+            self.dense_net.preset_p[idx]
+                .iter()
+                .map(|&t_idx| self.mapping.transition(t_idx))
+        })
     }
 
     /// Iterates over all [`Transition`]s in the *postset* `(p•)` of the provided [`Place`] =.
@@ -197,15 +199,12 @@ impl Net {
     /// there is an arc from the place to the transition (`p → t`).
     ///
     /// If the provided place does not exist in the net, this method returns an empty iterator.
-    pub fn place_postset(&self, place: &Place) -> impl Iterator<Item = Transition> + '_ {
-        self.mapping
-            .place_idx(*place)
-            .into_iter()
-            .flat_map(|idx| {
-                self.dense_net.postset_p[idx]
-                    .iter()
-                    .map(|&t_idx| self.mapping.transition(t_idx))
-            })
+    pub fn place_postset(&self, place: &Place) -> impl Iterator<Item=Transition> + '_ {
+        self.mapping.place_idx(*place).into_iter().flat_map(|idx| {
+            self.dense_net.postset_p[idx]
+                .iter()
+                .map(|&t_idx| self.mapping.transition(t_idx))
+        })
     }
 
     /// Iterates over all [`Place`]s in the *preset* `(•t)` of the provided [`Transition`].
@@ -214,7 +213,7 @@ impl Net {
     /// there is an arc from the place to the transition (`p → t`).
     ///
     /// If the provided transition does not exist in the net, this method returns an empty iterator.
-    pub fn transition_preset(&self, transition: &Transition) -> impl Iterator<Item = Place> + '_ {
+    pub fn transition_preset(&self, transition: &Transition) -> impl Iterator<Item=Place> + '_ {
         self.mapping
             .transition_idx(*transition)
             .into_iter()
@@ -231,7 +230,7 @@ impl Net {
     /// there is an arc from the transition to the place (`t → p`).
     ///
     /// If the provided transition does not exist in the net, this method returns an empty iterator.
-    pub fn transition_postset(&self, transition: &Transition) -> impl Iterator<Item = Place> + '_ {
+    pub fn transition_postset(&self, transition: &Transition) -> impl Iterator<Item=Place> + '_ {
         self.mapping
             .transition_idx(*transition)
             .into_iter()
@@ -243,32 +242,31 @@ impl Net {
     }
 
     /// Iterates over all [`Arc`]s in the net in unspecified order.
-    pub fn arcs(&self) -> impl Iterator<Item = Arc> + '_ {
+    pub fn arcs(&self) -> impl Iterator<Item=Arc> + '_ {
         self.dense_net.arc_indices().map(|idx_arc| match idx_arc {
             IdxArc::PlaceToTransition(p_idx, t_idx) => {
                 let place = self.mapping.place(p_idx);
                 let transition = self.mapping.transition(t_idx);
                 Arc::PlaceToTransition(place, transition)
-            },
+            }
             IdxArc::TransitionToPlace(t_idx, p_idx) => {
                 let transition = self.mapping.transition(t_idx);
                 let place = self.mapping.place(p_idx);
                 Arc::TransitionToPlace(transition, place)
-            },
+            }
         })
     }
-
-    /// Returns whether every place in this net belongs to an S-component.
+    
+    /// Returns true if the net has a source transition, i.e. a transition with no preset places.
     #[must_use]
-    pub fn is_covered_by_s_components(&self) -> bool {
-        // todo
-        false
+    pub fn has_source_transition(&self) -> bool {
+        self.dense_net.has_source_transition()
     }
 
     /// Returns true if the given marking enables no transitions in this net
     #[must_use]
     pub fn is_deadlock(&self, marking: Marking<u32>) -> bool {
-        let idx_marking = self.mapping.decode(marking);
+        let idx_marking = self.mapping.idx_marking(marking);
         self.dense_net.is_deadlock(&idx_marking)
     }
 }
